@@ -1,0 +1,333 @@
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  CI BUILD & PUSH - Build Docker images and push to ECR                       ║
+# ║  Code-to-Cloud v0.5 - Enterprise CI/CD Platform                              ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+name: "🔨 20: CI Build & Push"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vote/**'
+      - 'result/**'
+      - 'worker/**'
+      - '.opsera-voting-app/Dockerfile.*'
+  workflow_dispatch:
+    inputs:
+      auto_deploy:
+        description: 'Automatically trigger deploy after build'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  AWS_REGION: us-west-2
+  APP_NAME: voting-app
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # PREPARE
+  # ════════════════════════════════════════════════════════════════════════════
+  prepare:
+    name: "📦 Prepare"
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+      ecr_uri: ${{ steps.ecr.outputs.ecr_uri }}
+      
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Generate Image Tag
+        id: tag
+        run: |
+          IMAGE_TAG="${GITHUB_SHA:0:7}-$(date +%Y%m%d%H%M%S)"
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "### 🏷️ Image Tag: \`${IMAGE_TAG}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Get ECR URI (RULE 7)
+        id: ecr
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          echo "ecr_uri=${ECR_URI}" >> $GITHUB_OUTPUT
+          echo "ECR URI: ${ECR_URI}"
+
+      - name: Create ECR Repositories if not exist
+        run: |
+          for SERVICE in vote result worker; do
+            aws ecr describe-repositories --repository-names $SERVICE 2>/dev/null || \
+            aws ecr create-repository --repository-name $SERVICE \
+              --image-scanning-configuration scanOnPush=true
+            echo "✅ ECR repository ${SERVICE} ready"
+          done
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # BUILD VOTE
+  # ════════════════════════════════════════════════════════════════════════════
+  build-vote:
+    name: "🔨 Build Vote"
+    runs-on: ubuntu-latest
+    needs: [prepare]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+          docker login --username AWS --password-stdin ${{ needs.prepare.outputs.ecr_uri }}
+
+      - name: Build and Push Vote Image
+        run: |
+          FULL_IMAGE="${{ needs.prepare.outputs.ecr_uri }}/vote:${{ needs.prepare.outputs.image_tag }}"
+          
+          docker build \
+            --no-cache \
+            --pull \
+            --target final \
+            -t "$FULL_IMAGE" \
+            -f .opsera-${{ env.APP_NAME }}/Dockerfile.vote \
+            ./vote
+          
+          docker push "$FULL_IMAGE"
+          
+          # Also tag as latest
+          docker tag "$FULL_IMAGE" "${{ needs.prepare.outputs.ecr_uri }}/vote:latest"
+          docker push "${{ needs.prepare.outputs.ecr_uri }}/vote:latest"
+          
+          echo "### ✅ Vote Image Built" >> $GITHUB_STEP_SUMMARY
+          echo "\`${FULL_IMAGE}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # BUILD RESULT
+  # ════════════════════════════════════════════════════════════════════════════
+  build-result:
+    name: "🔨 Build Result"
+    runs-on: ubuntu-latest
+    needs: [prepare]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+          docker login --username AWS --password-stdin ${{ needs.prepare.outputs.ecr_uri }}
+
+      - name: Build and Push Result Image
+        run: |
+          FULL_IMAGE="${{ needs.prepare.outputs.ecr_uri }}/result:${{ needs.prepare.outputs.image_tag }}"
+          
+          docker build \
+            --no-cache \
+            --pull \
+            --target final \
+            -t "$FULL_IMAGE" \
+            -f .opsera-${{ env.APP_NAME }}/Dockerfile.result \
+            ./result
+          
+          docker push "$FULL_IMAGE"
+          
+          # Also tag as latest
+          docker tag "$FULL_IMAGE" "${{ needs.prepare.outputs.ecr_uri }}/result:latest"
+          docker push "${{ needs.prepare.outputs.ecr_uri }}/result:latest"
+          
+          echo "### ✅ Result Image Built" >> $GITHUB_STEP_SUMMARY
+          echo "\`${FULL_IMAGE}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # BUILD WORKER
+  # ════════════════════════════════════════════════════════════════════════════
+  build-worker:
+    name: "🔨 Build Worker"
+    runs-on: ubuntu-latest
+    needs: [prepare]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+          docker login --username AWS --password-stdin ${{ needs.prepare.outputs.ecr_uri }}
+
+      - name: Build and Push Worker Image
+        run: |
+          FULL_IMAGE="${{ needs.prepare.outputs.ecr_uri }}/worker:${{ needs.prepare.outputs.image_tag }}"
+          
+          docker build \
+            --no-cache \
+            --pull \
+            -t "$FULL_IMAGE" \
+            -f .opsera-${{ env.APP_NAME }}/Dockerfile.worker \
+            ./worker
+          
+          docker push "$FULL_IMAGE"
+          
+          # Also tag as latest
+          docker tag "$FULL_IMAGE" "${{ needs.prepare.outputs.ecr_uri }}/worker:latest"
+          docker push "${{ needs.prepare.outputs.ecr_uri }}/worker:latest"
+          
+          echo "### ✅ Worker Image Built" >> $GITHUB_STEP_SUMMARY
+          echo "\`${FULL_IMAGE}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # UPDATE KUSTOMIZE
+  # ════════════════════════════════════════════════════════════════════════════
+  update-kustomize:
+    name: "📝 Update Kustomize"
+    runs-on: ubuntu-latest
+    needs: [prepare, build-vote, build-result, build-worker]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Update Kustomization (RULE 8 - Pull before modify)
+        env:
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          ECR_URI: ${{ needs.prepare.outputs.ecr_uri }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # RULE 8: Pull BEFORE modifying files
+          git pull --rebase origin main || true
+          
+          # Update dev overlay
+          KUSTOMIZE_FILE=".opsera-${{ env.APP_NAME }}/k8s/overlays/dev/kustomization.yaml"
+          
+          # Update image references (DEV2-016: Output both ecr_uri and image_tag)
+          sed -i "s|newName: .*/vote|newName: ${ECR_URI}/vote|g" "$KUSTOMIZE_FILE"
+          sed -i "s|newName: .*/result|newName: ${ECR_URI}/result|g" "$KUSTOMIZE_FILE"
+          sed -i "s|newName: .*/worker|newName: ${ECR_URI}/worker|g" "$KUSTOMIZE_FILE"
+          sed -i "s|newTag:.*|newTag: ${IMAGE_TAG}|g" "$KUSTOMIZE_FILE"
+          
+          # Also update base
+          BASE_KUSTOMIZE=".opsera-${{ env.APP_NAME }}/k8s/base/kustomization.yaml"
+          sed -i "s|newName: .*/vote|newName: ${ECR_URI}/vote|g" "$BASE_KUSTOMIZE"
+          sed -i "s|newName: .*/result|newName: ${ECR_URI}/result|g" "$BASE_KUSTOMIZE"
+          sed -i "s|newName: .*/worker|newName: ${ECR_URI}/worker|g" "$BASE_KUSTOMIZE"
+          sed -i "s|newTag:.*|newTag: ${IMAGE_TAG}|g" "$BASE_KUSTOMIZE"
+          
+          echo "Updated kustomization with tag: ${IMAGE_TAG}"
+          cat "$KUSTOMIZE_FILE"
+          
+          git add .
+          git diff --staged --quiet || git commit -m "chore: update images to ${IMAGE_TAG} [skip ci]"
+          git push origin main || echo "No changes to push"
+
+      - name: Summary
+        run: |
+          echo "### 📝 Kustomize Updated" >> $GITHUB_STEP_SUMMARY
+          echo "Image tag \`${{ needs.prepare.outputs.image_tag }}\` applied to DEV overlay" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # SYNC ARGOCD
+  # ════════════════════════════════════════════════════════════════════════════
+  sync-argocd:
+    name: "🔄 Sync ArgoCD"
+    runs-on: ubuntu-latest
+    needs: [prepare, update-kustomize]
+    
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl (RULE 25)
+        run: |
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Trigger ArgoCD Sync
+        run: |
+          # Connect to hub cluster
+          aws eks update-kubeconfig --name argocd-usw2 --region ${{ env.AWS_REGION }}
+          
+          # Hard refresh
+          kubectl patch application "${{ env.APP_NAME }}-dev" -n argocd \
+            --type merge -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}' || true
+          
+          sleep 5
+          
+          # Check sync status (RULE 26)
+          SYNC_STATUS=$(kubectl get application "${{ env.APP_NAME }}-dev" -n argocd \
+            -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+          
+          HEALTH_STATUS=$(kubectl get application "${{ env.APP_NAME }}-dev" -n argocd \
+            -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+          
+          echo "### 🔄 ArgoCD Sync Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Sync Status | \`${SYNC_STATUS}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Health Status | \`${HEALTH_STATUS}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Tag | \`${{ needs.prepare.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEPLOYMENT SUMMARY
+  # ════════════════════════════════════════════════════════════════════════════
+  summary:
+    name: "📋 Deployment Summary"
+    runs-on: ubuntu-latest
+    needs: [prepare, build-vote, build-result, build-worker, update-kustomize, sync-argocd]
+    if: always()
+    
+    steps:
+      - name: Generate Summary
+        run: |
+          echo "## 🚀 Build & Deploy Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Images Built" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Image |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Vote | \`${{ needs.prepare.outputs.ecr_uri }}/vote:${{ needs.prepare.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Result | \`${{ needs.prepare.outputs.ecr_uri }}/result:${{ needs.prepare.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Worker | \`${{ needs.prepare.outputs.ecr_uri }}/worker:${{ needs.prepare.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check ArgoCD sync status" >> $GITHUB_STEP_SUMMARY
+          echo "2. Verify pods are running" >> $GITHUB_STEP_SUMMARY
+          echo "3. Run HTTPS setup if not done" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,11 @@
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  DEV Namespace                                                               ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: voting-app-dev
+  labels:
+    app.kubernetes.io/part-of: voting-app
+    environment: dev
