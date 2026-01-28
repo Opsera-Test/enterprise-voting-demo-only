@@ -12,8 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini curl \
 # Copy package files
 COPY result/package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install dependencies (--omit=dev replaces deprecated --only=production)
+RUN npm ci --omit=dev
 
 # Copy application
 COPY result/ .
