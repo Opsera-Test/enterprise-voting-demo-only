@@ -42,9 +42,8 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # Use a role that ALREADY has hub cluster access
-          # This could be a central admin role or opsera-github-actions role
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/opsera-github-actions
+          # Use admin role that has hub cluster access (wildcard trust policy)
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/speri11-github-actions-role
           role-session-name: github-actions-grant-access-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
 
