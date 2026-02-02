@@ -39,11 +39,11 @@ patches:
 
 images:
   - name: PLACEHOLDER_VOTE_IMAGE
-    newName: PLACEHOLDER_ECR_REGISTRY/opsera/voting01-vote
+    newName: 792373136340.dkr.ecr.us-west-2.amazonaws.com/opsera/voting01-vote
     newTag: latest
   - name: PLACEHOLDER_RESULT_IMAGE
-    newName: PLACEHOLDER_ECR_REGISTRY/opsera/voting01-result
+    newName: 792373136340.dkr.ecr.us-west-2.amazonaws.com/opsera/voting01-result
     newTag: latest
   - name: PLACEHOLDER_WORKER_IMAGE
-    newName: PLACEHOLDER_ECR_REGISTRY/opsera/voting01-worker
+    newName: 792373136340.dkr.ecr.us-west-2.amazonaws.com/opsera/voting01-worker
     newTag: latest

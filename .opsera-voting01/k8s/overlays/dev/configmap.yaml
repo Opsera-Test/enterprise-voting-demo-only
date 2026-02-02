@@ -7,17 +7,17 @@ metadata:
     environment: dev
 data:
   # Redis Configuration (for Vote service)
-  REDIS_HOST: PLACEHOLDER_REDIS_HOST
+  REDIS_HOST: voting01-dev-redis.2muj25.0001.usw2.cache.amazonaws.com
   REDIS_PORT: "6379"
 
   # PostgreSQL Configuration (for Result service)
-  DATABASE_HOST: PLACEHOLDER_DATABASE_HOST
+  DATABASE_HOST: voting01-dev-postgres.chwgk42cofpp.us-west-2.rds.amazonaws.com
   DATABASE_PORT: "5432"
   DATABASE_NAME: votes
   DATABASE_USER: postgres
 
   # AWS Secrets Manager ARN for DB credentials
-  DATABASE_SECRET_ARN: PLACEHOLDER_DATABASE_SECRET_ARN
+  DATABASE_SECRET_ARN: arn:aws:secretsmanager:us-west-2:792373136340:secret:rds!db-90524015-d827-4f57-bed1-c14c12675556-pQeqiN
 
   # Application Settings
   ENVIRONMENT: dev
