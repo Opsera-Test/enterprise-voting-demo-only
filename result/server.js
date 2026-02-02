@@ -9,43 +9,32 @@ var express = require('express'),
 
 var port = process.env.PORT || 4000;
 
-// IAM Authentication support for RDS
+// Get database credentials from Secrets Manager (using IRSA)
 async function getConnectionConfig() {
-  const useIamAuth = process.env.DATABASE_USE_IAM_AUTH === 'true';
+  const secretArn = process.env.DATABASE_SECRET_ARN;
 
-  if (useIamAuth) {
-    // Use IAM authentication - generate auth token
-    const { RDSClient, GenerateDBAuthTokenCommand } = require('@aws-sdk/client-rds');
-    const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
+  if (secretArn) {
+    // Fetch credentials from Secrets Manager using IRSA
+    const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 
     const region = process.env.AWS_REGION || 'us-west-2';
     const host = process.env.DATABASE_HOST;
     const dbPort = parseInt(process.env.DATABASE_PORT || '5432');
-    const user = process.env.DATABASE_USER || 'app_user';
     const database = process.env.DATABASE_NAME || 'votes';
 
-    const rdsClient = new RDSClient({
-      region,
-      credentials: fromNodeProviderChain()
-    });
+    console.log(`Fetching database credentials from Secrets Manager using IRSA...`);
 
-    // Generate IAM auth token (valid for 15 minutes)
-    const command = new GenerateDBAuthTokenCommand({
-      hostname: host,
-      port: dbPort,
-      username: user,
-      region: region
-    });
+    const client = new SecretsManagerClient({ region });
+    const response = await client.send(new GetSecretValueCommand({ SecretId: secretArn }));
+    const secret = JSON.parse(response.SecretString);
 
-    const token = await rdsClient.send(command);
-
-    console.log(`Using IAM authentication for RDS: ${host}:${dbPort}`);
+    console.log(`Using Secrets Manager credentials for RDS: ${host}:${dbPort} as ${secret.username}`);
 
     return {
       host: host,
       port: dbPort,
-      user: user,
-      password: token,
+      user: secret.username,
+      password: secret.password,
       database: database,
       ssl: {
         rejectUnauthorized: false

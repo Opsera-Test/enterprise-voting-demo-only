@@ -27,23 +27,26 @@ spec:
                 configMapKeyRef:
                   name: sperivote11-config
                   key: DATABASE_HOST
-            - name: DATABASE_PORT
-              value: "5432"
+            - name: DATABASE_SECRET_ARN
+              valueFrom:
+                configMapKeyRef:
+                  name: sperivote11-config
+                  key: DATABASE_SECRET_ARN
             - name: DATABASE_NAME
-              value: "votes"
-            - name: DATABASE_USER
-              value: "app_user"
-            - name: DATABASE_USE_IAM_AUTH
-              value: "true"
+              valueFrom:
+                configMapKeyRef:
+                  name: sperivote11-config
+                  key: DATABASE_NAME
             - name: AWS_REGION
-              value: "us-west-2"
+              valueFrom:
+                configMapKeyRef:
+                  name: sperivote11-config
+                  key: AWS_REGION
             - name: REDIS_HOST
               valueFrom:
                 configMapKeyRef:
                   name: sperivote11-config
                   key: REDIS_HOST
-            - name: REDIS_PORT
-              value: "6379"
           resources:
             requests:
               cpu: 50m

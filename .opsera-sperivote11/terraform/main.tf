@@ -305,20 +305,7 @@ resource "aws_iam_role" "worker" {
   })
 }
 
-# IRSA Role for Database Init Job - can read RDS master password from Secrets Manager
-resource "aws_iam_role" "db_init" {
-  name = "${local.name_prefix}-db-init-irsa"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = { Federated = local.oidc_provider_arn }
-      Action = "sts:AssumeRoleWithWebIdentity"
-      Condition = { StringEquals = { "${local.oidc_provider_url}:aud" = "sts.amazonaws.com", "${local.oidc_provider_url}:sub" = "system:serviceaccount:${local.namespace}:db-init" } }
-    }]
-  })
-}
-
+# Secrets Manager read policy for apps to get RDS credentials
 resource "aws_iam_policy" "secrets_read" {
   name = "${local.name_prefix}-secrets-read"
   policy = jsonencode({
@@ -331,30 +318,13 @@ resource "aws_iam_policy" "secrets_read" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "db_init_secrets" {
-  role       = aws_iam_role.db_init.name
+# Attach Secrets Manager read policy to worker and result (for password auth)
+resource "aws_iam_role_policy_attachment" "result_secrets" {
+  role       = aws_iam_role.result.name
   policy_arn = aws_iam_policy.secrets_read.arn
 }
 
-# RDS IAM Auth Policy
-resource "aws_iam_policy" "rds_iam_auth" {
-  name = "${local.name_prefix}-rds-iam-auth"
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["rds-db:connect"]
-      Resource = ["arn:aws:rds-db:${var.aws_region}:${data.aws_caller_identity.current.account_id}:dbuser:${aws_db_instance.postgres.resource_id}/app_user"]
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "result_rds" {
-  role       = aws_iam_role.result.name
-  policy_arn = aws_iam_policy.rds_iam_auth.arn
-}
-
-resource "aws_iam_role_policy_attachment" "worker_rds" {
+resource "aws_iam_role_policy_attachment" "worker_secrets" {
   role       = aws_iam_role.worker.name
-  policy_arn = aws_iam_policy.rds_iam_auth.arn
+  policy_arn = aws_iam_policy.secrets_read.arn
 }

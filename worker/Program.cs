@@ -8,7 +8,8 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Npgsql;
 using StackExchange.Redis;
-using Amazon.RDS.Util;
+using Amazon.SecretsManager;
+using Amazon.SecretsManager.Model;
 
 namespace Worker
 {
@@ -21,32 +22,32 @@ namespace Worker
                 // Configuration from environment variables
                 var dbHost = Environment.GetEnvironmentVariable("DATABASE_HOST") ?? "db";
                 var dbPort = int.Parse(Environment.GetEnvironmentVariable("DATABASE_PORT") ?? "5432");
-                var dbUser = Environment.GetEnvironmentVariable("DATABASE_USER") ?? "postgres";
                 var dbName = Environment.GetEnvironmentVariable("DATABASE_NAME") ?? "votes";
-                var useIamAuth = Environment.GetEnvironmentVariable("DATABASE_USE_IAM_AUTH") == "true";
                 var awsRegion = Environment.GetEnvironmentVariable("AWS_REGION") ?? "us-west-2";
+                var secretArn = Environment.GetEnvironmentVariable("DATABASE_SECRET_ARN");
 
                 var redisHost = Environment.GetEnvironmentVariable("REDIS_HOST") ?? "redis";
                 var redisPort = int.Parse(Environment.GetEnvironmentVariable("REDIS_PORT") ?? "6379");
 
-                // Build connection string
+                // Build connection string - fetch credentials from Secrets Manager (IRSA)
                 string dbConnectionString;
-                if (useIamAuth)
+                string dbUser;
+                string dbPassword;
+
+                if (!string.IsNullOrEmpty(secretArn))
                 {
-                    // Generate IAM auth token
-                    var authToken = RDSAuthTokenGenerator.GenerateAuthToken(
-                        Amazon.RegionEndpoint.GetBySystemName(awsRegion),
-                        dbHost,
-                        dbPort,
-                        dbUser
-                    );
-                    Console.WriteLine($"Using IAM authentication for RDS: {dbHost}:{dbPort}");
-                    dbConnectionString = $"Server={dbHost};Port={dbPort};Username={dbUser};Password={authToken};Database={dbName};SSL Mode=Require;Trust Server Certificate=true";
+                    Console.WriteLine($"Fetching database credentials from Secrets Manager using IRSA...");
+                    var credentials = GetSecretAsync(secretArn, awsRegion).GetAwaiter().GetResult();
+                    dbUser = credentials.username;
+                    dbPassword = credentials.password;
+                    Console.WriteLine($"Using Secrets Manager credentials for RDS: {dbHost}:{dbPort} as {dbUser}");
+                    dbConnectionString = $"Server={dbHost};Port={dbPort};Username={dbUser};Password={dbPassword};Database={dbName};SSL Mode=Require;Trust Server Certificate=true";
                 }
                 else
                 {
-                    var dbPassword = Environment.GetEnvironmentVariable("DATABASE_PASSWORD") ?? "postgres";
-                    Console.WriteLine("Using password authentication for database");
+                    dbUser = Environment.GetEnvironmentVariable("DATABASE_USER") ?? "postgres";
+                    dbPassword = Environment.GetEnvironmentVariable("DATABASE_PASSWORD") ?? "postgres";
+                    Console.WriteLine($"Using environment variable credentials for database as {dbUser}");
                     dbConnectionString = $"Server={dbHost};Port={dbPort};Username={dbUser};Password={dbPassword};Database={dbName}";
                 }
 
@@ -59,10 +60,6 @@ namespace Worker
                 keepAliveCommand.CommandText = "SELECT 1";
 
                 var definition = new { vote = "", voter_id = "" };
-
-                // Track when we need to refresh the IAM token (every 10 minutes)
-                var lastTokenRefresh = DateTime.UtcNow;
-                var tokenRefreshInterval = TimeSpan.FromMinutes(10);
 
                 while (true)
                 {
@@ -82,34 +79,16 @@ namespace Worker
                         var vote = JsonConvert.DeserializeAnonymousType(json, definition);
                         Console.WriteLine($"Processing vote for '{vote.vote}' by '{vote.voter_id}'");
 
-                        // Check if we need to refresh the DB connection (for IAM auth token refresh)
-                        if (useIamAuth && DateTime.UtcNow - lastTokenRefresh > tokenRefreshInterval)
-                        {
-                            Console.WriteLine("Refreshing IAM auth token...");
-                            pgsql.Close();
-                            var newToken = RDSAuthTokenGenerator.GenerateAuthToken(
-                                Amazon.RegionEndpoint.GetBySystemName(awsRegion),
-                                dbHost,
-                                dbPort,
-                                dbUser
-                            );
-                            dbConnectionString = $"Server={dbHost};Port={dbPort};Username={dbUser};Password={newToken};Database={dbName};SSL Mode=Require;Trust Server Certificate=true";
-                            pgsql = OpenDbConnection(dbConnectionString);
-                            keepAliveCommand = pgsql.CreateCommand();
-                            keepAliveCommand.CommandText = "SELECT 1";
-                            lastTokenRefresh = DateTime.UtcNow;
-                        }
-
                         // Reconnect DB if down
                         if (!pgsql.State.Equals(System.Data.ConnectionState.Open))
                         {
                             Console.WriteLine("Reconnecting DB");
                             pgsql = OpenDbConnection(dbConnectionString);
+                            keepAliveCommand = pgsql.CreateCommand();
+                            keepAliveCommand.CommandText = "SELECT 1";
                         }
-                        else
-                        {
-                            UpdateVote(pgsql, vote.voter_id, vote.vote);
-                        }
+
+                        UpdateVote(pgsql, vote.voter_id, vote.vote);
                     }
                     else
                     {
@@ -199,6 +178,14 @@ namespace Worker
             {
                 command.Dispose();
             }
+        }
+
+        private static async Task<(string username, string password)> GetSecretAsync(string secretArn, string region)
+        {
+            using var client = new AmazonSecretsManagerClient(Amazon.RegionEndpoint.GetBySystemName(region));
+            var response = await client.GetSecretValueAsync(new GetSecretValueRequest { SecretId = secretArn });
+            var secret = JsonConvert.DeserializeObject<dynamic>(response.SecretString);
+            return (secret.username.ToString(), secret.password.ToString());
         }
     }
 }

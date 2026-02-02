@@ -34,10 +34,6 @@ output "irsa_worker_role_arn" {
   value = aws_iam_role.worker.arn
 }
 
-output "irsa_db_init_role_arn" {
-  value = aws_iam_role.db_init.arn
-}
-
 output "rds_master_secret_arn" {
   value = aws_secretsmanager_secret.rds_master.arn
 }

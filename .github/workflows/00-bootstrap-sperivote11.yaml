@@ -110,11 +110,13 @@ jobs:
           echo "vote_irsa=$(terraform output -raw irsa_vote_role_arn)" >> $GITHUB_OUTPUT
           echo "result_irsa=$(terraform output -raw irsa_result_role_arn)" >> $GITHUB_OUTPUT
           echo "worker_irsa=$(terraform output -raw irsa_worker_role_arn)" >> $GITHUB_OUTPUT
+          echo "secret_arn=$(terraform output -raw rds_master_secret_arn)" >> $GITHUB_OUTPUT
 
       - name: Update ConfigMap
         run: |
           sed -i "s|PLACEHOLDER_REDIS_HOST|${{ steps.tf.outputs.redis_address }}|g" .opsera-sperivote11/k8s/overlays/dev/configmap.yaml
           sed -i "s|PLACEHOLDER_DATABASE_HOST|${{ steps.tf.outputs.rds_address }}|g" .opsera-sperivote11/k8s/overlays/dev/configmap.yaml
+          sed -i "s|PLACEHOLDER_DATABASE_SECRET_ARN|${{ steps.tf.outputs.secret_arn }}|g" .opsera-sperivote11/k8s/overlays/dev/configmap.yaml
 
       - name: Update ServiceAccounts
         run: |
@@ -136,169 +138,10 @@ jobs:
           git pull --rebase origin main
           git push origin main
 
-  init-database:
-    name: "🗄️ Initialize Database"
-    needs: [terraform, update-manifests]
-    if: always() && (needs.terraform.result == 'success' || inputs.skip_terraform == true) && needs.update-manifests.result == 'success' && inputs.action == 'apply'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - uses: hashicorp/setup-terraform@v3
-
-      - uses: actions/checkout@v4
-
-      - name: Get Terraform Outputs
-        id: tf
-        working-directory: .opsera-sperivote11/terraform
-        run: |
-          terraform init -backend-config="key=sperivote11/dev/terraform.tfstate"
-          echo "rds_host=$(terraform output -raw rds_address)" >> $GITHUB_OUTPUT
-          echo "secret_arn=$(terraform output -raw rds_master_secret_arn)" >> $GITHUB_OUTPUT
-          echo "db_init_role=$(terraform output -raw irsa_db_init_role_arn)" >> $GITHUB_OUTPUT
-
-      - name: Setup kubectl for SPOKE cluster
-        run: aws eks update-kubeconfig --name ${{ env.SPOKE_CLUSTER }} --region ${{ env.AWS_REGION }}
-
-      - name: Create DB Init ServiceAccount with IRSA
-        env:
-          DB_INIT_ROLE: ${{ steps.tf.outputs.db_init_role }}
-        run: |
-          # Create namespace if not exists
-          kubectl create namespace ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} --dry-run=client -o yaml | kubectl apply -f -
-
-          # Create ServiceAccount with IRSA annotation (zero hardcoded credentials!)
-          cat <<EOF | kubectl apply -f -
-          apiVersion: v1
-          kind: ServiceAccount
-          metadata:
-            name: db-init
-            namespace: ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}
-            annotations:
-              eks.amazonaws.com/role-arn: "${DB_INIT_ROLE}"
-          EOF
-
-      - name: Create IAM Database User via K8s Job (IRSA)
-        env:
-          RDS_HOST: ${{ steps.tf.outputs.rds_host }}
-          SECRET_ARN: ${{ steps.tf.outputs.secret_arn }}
-        run: |
-          # Delete old job if exists
-          kubectl delete job db-init-${{ env.APP_NAME }} -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} --ignore-not-found
-
-          # Create job that uses IRSA to fetch credentials from Secrets Manager
-          cat <<EOF | kubectl apply -f -
-          apiVersion: batch/v1
-          kind: Job
-          metadata:
-            name: db-init-${{ env.APP_NAME }}
-            namespace: ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}
-          spec:
-            ttlSecondsAfterFinished: 300
-            template:
-              spec:
-                serviceAccountName: db-init
-                restartPolicy: Never
-                containers:
-                - name: db-init
-                  image: amazon/aws-cli:2.15.0
-                  env:
-                  - name: AWS_REGION
-                    value: "${{ env.AWS_REGION }}"
-                  - name: SECRET_ARN
-                    value: "${SECRET_ARN}"
-                  - name: RDS_HOST
-                    value: "${RDS_HOST}"
-                  command:
-                  - /bin/bash
-                  - -c
-                  - |
-                    set -e
-                    echo "🔐 Fetching RDS credentials from Secrets Manager using IRSA..."
-
-                    # Install PostgreSQL client
-                    yum install -y postgresql15 > /dev/null 2>&1
-
-                    # Fetch credentials from Secrets Manager (uses IRSA - no hardcoded secrets!)
-                    SECRET=\$(aws secretsmanager get-secret-value --secret-id \${SECRET_ARN} --query SecretString --output text)
-                    export PGPASSWORD=\$(echo \${SECRET} | jq -r '.password')
-                    export PGUSER=\$(echo \${SECRET} | jq -r '.username')
-                    export PGHOST=\${RDS_HOST}
-                    export PGDATABASE="votes"
-
-                    echo "📊 Connecting to RDS at \${PGHOST} as \${PGUSER}..."
-
-                    psql -c "
-                    -- Create app_user if not exists
-                    DO \\\$\\\$
-                    BEGIN
-                      IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_user') THEN
-                        CREATE USER app_user WITH LOGIN;
-                        RAISE NOTICE 'Created user app_user';
-                      ELSE
-                        RAISE NOTICE 'User app_user already exists';
-                      END IF;
-                    END
-                    \\\$\\\$;
-
-                    -- Grant IAM authentication (this enables IRSA for app_user)
-                    GRANT rds_iam TO app_user;
-
-                    -- Grant permissions
-                    GRANT ALL PRIVILEGES ON DATABASE votes TO app_user;
-                    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO app_user;
-                    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO app_user;
-                    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO app_user;
-                    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO app_user;
-                    "
-
-                    echo "✅ Verifying user creation..."
-                    psql -c "SELECT usename FROM pg_user WHERE usename = 'app_user';"
-                    echo "🎉 Database user app_user configured with IAM authentication!"
-          EOF
-
-          # Wait for pod to start
-          echo "Waiting for pod to start..."
-          sleep 10
-          kubectl get pods -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -l job-name=db-init-${{ env.APP_NAME }}
-
-          # Wait for job to complete (with loop for better logging)
-          echo "Waiting for database init job to complete..."
-          for i in {1..36}; do
-            STATUS=$(kubectl get job db-init-${{ env.APP_NAME }} -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -o jsonpath='{.status.conditions[0].type}' 2>/dev/null || echo "Pending")
-            echo "[$i/36] Job status: $STATUS"
-
-            if [ "$STATUS" == "Complete" ]; then
-              echo "✅ Job completed successfully!"
-              kubectl logs job/db-init-${{ env.APP_NAME }} -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}
-              echo "✅ Database user app_user created with IAM auth" >> $GITHUB_STEP_SUMMARY
-              exit 0
-            elif [ "$STATUS" == "Failed" ]; then
-              echo "❌ Job failed! Showing logs..."
-              kubectl logs job/db-init-${{ env.APP_NAME }} -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} || true
-              kubectl describe pod -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -l job-name=db-init-${{ env.APP_NAME }} || true
-              exit 1
-            fi
-
-            sleep 5
-          done
-
-          # Timeout - show debug info
-          echo "⚠️ Timeout waiting for job. Showing debug info..."
-          kubectl get pods -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -l job-name=db-init-${{ env.APP_NAME }} -o wide
-          kubectl describe pod -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -l job-name=db-init-${{ env.APP_NAME }}
-          kubectl logs job/db-init-${{ env.APP_NAME }} -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} || true
-          exit 1
-
   apply-argocd:
     name: "🚀 Apply ArgoCD"
-    needs: [update-manifests, init-database]
-    if: always() && needs.update-manifests.result == 'success'
+    needs: [update-manifests]
+    if: always() && needs.update-manifests.result == 'success' && inputs.action == 'apply'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
