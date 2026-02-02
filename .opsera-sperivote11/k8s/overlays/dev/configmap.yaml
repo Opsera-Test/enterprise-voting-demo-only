@@ -8,5 +8,5 @@ metadata:
     app.kubernetes.io/part-of: sperivote11
     environment: dev
 data:
-  REDIS_HOST: "PLACEHOLDER_REDIS_HOST"
-  DATABASE_HOST: "PLACEHOLDER_DATABASE_HOST"
+  REDIS_HOST: "sperivote11-dev-redis.2muj25.0001.usw2.cache.amazonaws.com"
+  DATABASE_HOST: "sperivote11-dev-postgres.chwgk42cofpp.us-west-2.rds.amazonaws.com"
