@@ -34,21 +34,15 @@ jobs:
 
       - name: Worker Logs
         run: |
-          echo "### Worker Logs (last 50 lines)" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          kubectl logs -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -l app=worker --tail=50 >> $GITHUB_STEP_SUMMARY 2>&1 || echo "No logs" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "=== WORKER LOGS ==="
+          kubectl logs -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -l app=worker --tail=100 || echo "No logs"
 
       - name: Result Logs
         run: |
-          echo "### Result Logs (last 30 lines)" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          kubectl logs -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -l app=result --tail=30 >> $GITHUB_STEP_SUMMARY 2>&1 || echo "No logs" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "=== RESULT LOGS ==="
+          kubectl logs -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -l app=result --tail=50 || echo "No logs"
 
       - name: Worker Env Check
         run: |
-          echo "### Worker Environment" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          kubectl exec -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} deploy/worker -- env | grep -E "(DATABASE|AWS|REDIS)" >> $GITHUB_STEP_SUMMARY 2>&1 || echo "Could not get env" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "=== WORKER ENV ==="
+          kubectl exec -n ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} deploy/worker -- env | grep -E "(DATABASE|AWS|REDIS)" || echo "Could not get env"
