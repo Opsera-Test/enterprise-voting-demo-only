@@ -253,7 +253,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add .opsera-vote3/
+          # Exclude .terraform directory (contains large provider binaries)
+          git add .opsera-vote3/k8s/
+          git add .opsera-vote3/argocd/
 
           if git diff --cached --quiet; then
             echo "No changes to commit"
