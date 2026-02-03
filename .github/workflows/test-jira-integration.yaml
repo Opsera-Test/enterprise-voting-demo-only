@@ -1,0 +1,228 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST JIRA INTEGRATION
+# Standalone test to verify Jira ticket creation works
+# ════════════════════════════════════════════════════════════════════════════════
+
+name: "🧪 Test Jira Integration"
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of Jira ticket to create'
+        type: choice
+        options: ['security-vulnerability', 'deployment-failure', 'test-ticket']
+        default: 'test-ticket'
+
+jobs:
+  test-jira:
+    name: "📋 Test Jira"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Jira Configuration
+        id: check-jira
+        run: |
+          echo "### 🔍 Jira Configuration Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          CONFIGURED="true"
+          MISSING=""
+
+          if [ -z "${{ secrets.JIRA_API_TOKEN }}" ]; then
+            CONFIGURED="false"
+            MISSING="${MISSING} JIRA_API_TOKEN"
+            echo "❌ JIRA_API_TOKEN: Not configured" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ JIRA_API_TOKEN: Configured" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -z "${{ secrets.JIRA_EMAIL }}" ]; then
+            CONFIGURED="false"
+            MISSING="${MISSING} JIRA_EMAIL"
+            echo "❌ JIRA_EMAIL: Not configured" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ JIRA_EMAIL: Configured" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -z "${{ secrets.JIRA_BASE_URL }}" ]; then
+            CONFIGURED="false"
+            MISSING="${MISSING} JIRA_BASE_URL"
+            echo "❌ JIRA_BASE_URL: Not configured" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ JIRA_BASE_URL: Configured" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "configured=${CONFIGURED}" >> $GITHUB_OUTPUT
+
+          if [ "$CONFIGURED" = "false" ]; then
+            echo "⚠️ **Missing secrets:**${MISSING}" >> $GITHUB_STEP_SUMMARY
+            echo "Please configure the missing secrets in repository settings." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Test Jira API Connection
+        if: steps.check-jira.outputs.configured == 'true'
+        run: |
+          echo "### 🔌 Testing Jira API Connection" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Test API connection by getting server info
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Basic $(echo -n '${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}' | base64)" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.JIRA_BASE_URL }}/rest/api/3/serverInfo")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ **API Connection:** Success (HTTP $HTTP_CODE)" >> $GITHUB_STEP_SUMMARY
+            SERVER_TITLE=$(echo "$BODY" | jq -r '.serverTitle // "Unknown"')
+            VERSION=$(echo "$BODY" | jq -r '.version // "Unknown"')
+            echo "- Server: $SERVER_TITLE" >> $GITHUB_STEP_SUMMARY
+            echo "- Version: $VERSION" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **API Connection:** Failed (HTTP $HTTP_CODE)" >> $GITHUB_STEP_SUMMARY
+            echo "Response: $BODY" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: List Available Projects
+        if: steps.check-jira.outputs.configured == 'true'
+        run: |
+          echo "### 📁 Available Jira Projects" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          RESPONSE=$(curl -s \
+            -H "Authorization: Basic $(echo -n '${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}' | base64)" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.JIRA_BASE_URL }}/rest/api/3/project")
+
+          echo "| Key | Name |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|------|" >> $GITHUB_STEP_SUMMARY
+          echo "$RESPONSE" | jq -r '.[] | "| \(.key) | \(.name) |"' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Save first project key for testing
+          FIRST_PROJECT=$(echo "$RESPONSE" | jq -r '.[0].key // "DEPLOY"')
+          echo "first_project=${FIRST_PROJECT}" >> $GITHUB_OUTPUT
+
+      - name: Create Test Jira Ticket
+        if: steps.check-jira.outputs.configured == 'true'
+        id: create-ticket
+        run: |
+          echo "### 📝 Creating Test Jira Ticket" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          TEST_TYPE="${{ github.event.inputs.test_type }}"
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+
+          case "$TEST_TYPE" in
+            "security-vulnerability")
+              SUMMARY="[TEST-SECURITY] voting01-dev: 3 Critical, 5 High vulnerabilities"
+              DESCRIPTION="Test security vulnerability ticket from CI/CD pipeline.\\n\\nThis is a test to verify Jira integration for security scan findings.\\n\\n*Test Details:*\\n- Timestamp: ${TIMESTAMP}\\n- Workflow: ${{ github.workflow }}\\n- Run ID: ${{ github.run_id }}"
+              LABELS='["security-vulnerability", "test", "grype"]'
+              PRIORITY="High"
+              ;;
+            "deployment-failure")
+              SUMMARY="[TEST-DEPLOY] voting01-dev Deployment Failed"
+              DESCRIPTION="Test deployment failure ticket from CI/CD pipeline.\\n\\nThis is a test to verify Jira integration for deployment failures.\\n\\n*Test Details:*\\n- Timestamp: ${TIMESTAMP}\\n- Workflow: ${{ github.workflow }}\\n- Run ID: ${{ github.run_id }}"
+              LABELS='["deployment-failure", "test", "voting01"]'
+              PRIORITY="High"
+              ;;
+            *)
+              SUMMARY="[TEST] Jira Integration Test - ${TIMESTAMP}"
+              DESCRIPTION="Test ticket to verify Jira integration is working correctly.\\n\\n*Test Details:*\\n- Timestamp: ${TIMESTAMP}\\n- Triggered by: ${{ github.actor }}\\n- Workflow: ${{ github.workflow }}\\n- Run ID: ${{ github.run_id }}\\n- Repository: ${{ github.repository }}"
+              LABELS='["test", "ci-cd-integration"]'
+              PRIORITY="Low"
+              ;;
+          esac
+
+          # Try DEPLOY project first, fallback to first available
+          PROJECT_KEY="DEPLOY"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Authorization: Basic $(echo -n '${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}' | base64)" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.JIRA_BASE_URL }}/rest/api/3/issue" \
+            -d "{
+              \"fields\": {
+                \"project\": {\"key\": \"${PROJECT_KEY}\"},
+                \"summary\": \"${SUMMARY}\",
+                \"description\": {
+                  \"type\": \"doc\",
+                  \"version\": 1,
+                  \"content\": [
+                    {
+                      \"type\": \"paragraph\",
+                      \"content\": [
+                        {\"type\": \"text\", \"text\": \"${DESCRIPTION}\"}
+                      ]
+                    },
+                    {
+                      \"type\": \"paragraph\",
+                      \"content\": [
+                        {\"type\": \"text\", \"text\": \"Workflow Run: \"},
+                        {\"type\": \"text\", \"text\": \"View in GitHub\", \"marks\": [{\"type\": \"link\", \"attrs\": {\"href\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}}]}
+                      ]
+                    }
+                  ]
+                },
+                \"issuetype\": {\"name\": \"Bug\"},
+                \"priority\": {\"name\": \"${PRIORITY}\"},
+                \"labels\": ${LABELS}
+              }
+            }")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          ISSUE_KEY=$(echo "$BODY" | jq -r '.key // "FAILED"')
+          ISSUE_ID=$(echo "$BODY" | jq -r '.id // "FAILED"')
+
+          if [ "$ISSUE_KEY" != "FAILED" ] && [ "$ISSUE_KEY" != "null" ] && [ "$HTTP_CODE" = "201" ]; then
+            ISSUE_URL="${{ secrets.JIRA_BASE_URL }}/browse/${ISSUE_KEY}"
+            echo "✅ **Ticket Created Successfully!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Issue Key | [${ISSUE_KEY}](${ISSUE_URL}) |" >> $GITHUB_STEP_SUMMARY
+            echo "| Issue ID | ${ISSUE_ID} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Type | ${TEST_TYPE} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Priority | ${PRIORITY} |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🔗 **[Open Ticket in Jira](${ISSUE_URL})**" >> $GITHUB_STEP_SUMMARY
+
+            echo "issue_key=${ISSUE_KEY}" >> $GITHUB_OUTPUT
+            echo "issue_url=${ISSUE_URL}" >> $GITHUB_OUTPUT
+          else
+            echo "❌ **Failed to create ticket** (HTTP $HTTP_CODE)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Error Response:**" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            echo "$BODY" | jq '.' >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "$BODY" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.check-jira.outputs.configured }}" != "true" ]; then
+            echo "❌ **Result:** Jira secrets not configured" >> $GITHUB_STEP_SUMMARY
+          elif [ -n "${{ steps.create-ticket.outputs.issue_key }}" ]; then
+            echo "✅ **Result:** Jira integration working!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The CI/CD pipeline can now create Jira tickets for:" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔒 Security vulnerability findings" >> $GITHUB_STEP_SUMMARY
+            echo "- 🚫 Deployment failures" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Result:** Jira ticket creation failed" >> $GITHUB_STEP_SUMMARY
+          fi
