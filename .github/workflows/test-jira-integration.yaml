@@ -1,6 +1,7 @@
 # ════════════════════════════════════════════════════════════════════════════════
 # TEST JIRA INTEGRATION
 # Standalone test to verify Jira ticket creation works
+# Enhanced with quality-gate-failure test type for SonarQube integration testing
 # ════════════════════════════════════════════════════════════════════════════════
 
 name: "🧪 Test Jira Integration"
@@ -11,8 +12,8 @@ on:
       test_type:
         description: 'Type of Jira ticket to create'
         type: choice
-        options: ['security-vulnerability', 'deployment-failure', 'test-ticket']
-        default: 'test-ticket'
+        options: ['quality-gate-failure', 'security-vulnerability', 'deployment-failure', 'test-ticket']
+        default: 'quality-gate-failure'
       jira_url_override:
         description: 'Override JIRA_BASE_URL (leave empty to use secret)'
         type: string
@@ -26,7 +27,28 @@ on:
         description: 'Authentication type'
         type: choice
         options: ['basic', 'api-key']
-        default: 'basic'
+        default: 'api-key'
+      # Mock SonarQube data for quality-gate-failure test
+      mock_bugs:
+        description: 'Mock bug count (quality-gate test)'
+        type: string
+        default: '5'
+      mock_vulnerabilities:
+        description: 'Mock vulnerability count (quality-gate test)'
+        type: string
+        default: '2'
+      mock_code_smells:
+        description: 'Mock code smell count (quality-gate test)'
+        type: string
+        default: '47'
+      mock_coverage:
+        description: 'Mock coverage % (quality-gate test)'
+        type: string
+        default: '42.5'
+      mock_duplications:
+        description: 'Mock duplication % (quality-gate test)'
+        type: string
+        default: '8.3'
 
 jobs:
   test-jira:
@@ -51,9 +73,8 @@ jobs:
           fi
 
           if [ -z "${{ secrets.JIRA_EMAIL }}" ]; then
-            CONFIGURED="false"
-            MISSING="${MISSING} JIRA_EMAIL"
-            echo "❌ JIRA_EMAIL: Not configured" >> $GITHUB_STEP_SUMMARY
+            # Email is optional for api-key auth
+            echo "⚠️ JIRA_EMAIL: Not configured (optional for api-key auth)" >> $GITHUB_STEP_SUMMARY
           else
             echo "✅ JIRA_EMAIL: Configured" >> $GITHUB_STEP_SUMMARY
           fi
@@ -193,63 +214,211 @@ jobs:
           TEST_TYPE="${{ github.event.inputs.test_type }}"
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
 
-          case "$TEST_TYPE" in
-            "security-vulnerability")
-              SUMMARY="[TEST-SECURITY] voting01-dev: 3 Critical, 5 High vulnerabilities"
-              DESCRIPTION="Test security vulnerability ticket from CI/CD pipeline.\n\nThis is a test to verify Jira integration for security scan findings.\n\nTest Details:\n- Timestamp: ${TIMESTAMP}\n- Workflow: ${{ github.workflow }}\n- Run ID: ${{ github.run_id }}\n- GitHub: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-              PRIORITY="High"
-              ;;
-            "deployment-failure")
-              SUMMARY="[TEST-DEPLOY] voting01-dev Deployment Failed"
-              DESCRIPTION="Test deployment failure ticket from CI/CD pipeline.\n\nThis is a test to verify Jira integration for deployment failures.\n\nTest Details:\n- Timestamp: ${TIMESTAMP}\n- Workflow: ${{ github.workflow }}\n- Run ID: ${{ github.run_id }}\n- GitHub: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-              PRIORITY="High"
-              ;;
-            *)
-              SUMMARY="[TEST] Jira Integration Test - ${TIMESTAMP}"
-              DESCRIPTION="Test ticket to verify Jira integration is working correctly.\n\nTest Details:\n- Timestamp: ${TIMESTAMP}\n- Triggered by: ${{ github.actor }}\n- Workflow: ${{ github.workflow }}\n- Run ID: ${{ github.run_id }}\n- Repository: ${{ github.repository }}\n- GitHub: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-              PRIORITY="Medium"
-              ;;
-          esac
-
           # Use discovered project key from connection test, fallback to TEST
           PROJECT_KEY="${FIRST_PROJECT:-TEST}"
           echo "**Project:** \`${PROJECT_KEY}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Test Type:** \`${TEST_TYPE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
-          # API v2 uses plain text description, v3 uses ADF format
-          if [ "$API_VERSION" = "2" ]; then
-            PAYLOAD="{
-              \"fields\": {
-                \"project\": {\"key\": \"${PROJECT_KEY}\"},
-                \"summary\": \"${SUMMARY}\",
-                \"description\": \"${DESCRIPTION}\",
-                \"issuetype\": {\"name\": \"Task\"},
-                \"priority\": {\"name\": \"${PRIORITY}\"}
+          case "$TEST_TYPE" in
+            "quality-gate-failure")
+              # Mock SonarQube data from inputs
+              MOCK_BUGS="${{ github.event.inputs.mock_bugs }}"
+              MOCK_VULNS="${{ github.event.inputs.mock_vulnerabilities }}"
+              MOCK_SMELLS="${{ github.event.inputs.mock_code_smells }}"
+              MOCK_COVERAGE="${{ github.event.inputs.mock_coverage }}"
+              MOCK_DUPS="${{ github.event.inputs.mock_duplications }}"
+
+              # Calculate tech debt (mock: 15min per smell)
+              TECH_DEBT_MINS=$((MOCK_SMELLS * 15))
+              TECH_DEBT_HOURS=$((TECH_DEBT_MINS / 60))
+              TECH_DEBT_REMAINING=$((TECH_DEBT_MINS % 60))
+              TECH_DEBT="${TECH_DEBT_HOURS}h ${TECH_DEBT_REMAINING}m"
+
+              # Mock failed conditions
+              FAILED_CONDITIONS="- new_coverage: actual=${MOCK_COVERAGE} (threshold: 80.0)
+- new_bugs: actual=${MOCK_BUGS} (threshold: 0)
+- new_vulnerabilities: actual=${MOCK_VULNS} (threshold: 0)"
+
+              # Mock issues list
+              ISSUES_LIST="- [CRITICAL] SQL Injection vulnerability in user input handling (UserService.java:142)
+- [CRITICAL] Hardcoded database credentials detected (DatabaseConfig.java:23)
+- [MAJOR] Null pointer dereference possible (ApiController.java:89)
+- [MAJOR] Resource leak - connection not closed (DataRepository.java:156)
+- [MAJOR] Cognitive complexity too high (OrderProcessor.java:234)
+- [MAJOR] Duplicate code block detected (ValidationUtils.java:45)
+- [MINOR] Missing @Override annotation (BaseHandler.java:67)
+- [MINOR] Unused import statement (TestHelper.java:12)
+- [MINOR] Method parameter should be final (ConfigLoader.java:89)
+- [MINOR] Empty catch block (ErrorHandler.java:34)"
+
+              ISSUES_COUNT="127"
+
+              SUMMARY="[QUALITY] voting01-dev: ${MOCK_BUGS} bugs, ${MOCK_VULNS} vulns - Quality Gate Failed"
+              ISSUE_TYPE="Bug"
+
+              # Determine priority
+              if [ "${MOCK_BUGS:-0}" -gt 0 ] || [ "${MOCK_VULNS:-0}" -gt 0 ]; then
+                PRIORITY="Highest"
+              else
+                PRIORITY="High"
+              fi
+
+              # Build comprehensive description matching main workflow format
+              DESCRIPTION=$(cat << DESCEOF
+SonarQube quality gate check FAILED for voting01-dev.
+
+═══════════════════════════════════════
+QUALITY GATE STATUS: ERROR
+═══════════════════════════════════════
+
+📊 FAILED CONDITIONS:
+${FAILED_CONDITIONS}
+
+📈 CODE METRICS:
+┌─────────────────┬────────────┐
+│ Metric          │ Value      │
+├─────────────────┼────────────┤
+│ Bugs            │ ${MOCK_BUGS}            │
+│ Vulnerabilities │ ${MOCK_VULNS}            │
+│ Code Smells     │ ${MOCK_SMELLS}           │
+│ Coverage        │ ${MOCK_COVERAGE}%         │
+│ Duplications    │ ${MOCK_DUPS}%          │
+│ Tech Debt       │ ${TECH_DEBT}      │
+└─────────────────┴────────────┘
+
+🐛 TOP ISSUES (${ISSUES_COUNT} total):
+${ISSUES_LIST}
+
+═══════════════════════════════════════
+BUILD CONTEXT:
+═══════════════════════════════════════
+- Commit: ${{ github.sha }}
+- Branch: ${{ github.ref_name }}
+- Triggered by: ${{ github.actor }}
+- Event: workflow_dispatch (test)
+- Timestamp: ${TIMESTAMP}
+
+🔗 LINKS:
+- SonarQube Dashboard: https://sonarqube.example.com/dashboard?id=opsera-voting01
+- GitHub Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+═══════════════════════════════════════
+RECOMMENDED ACTIONS:
+═══════════════════════════════════════
+1. Review the failed conditions above
+2. Click the SonarQube Dashboard link for full issue details
+3. Fix issues in priority order: Bugs > Vulnerabilities > Code Smells
+4. Ensure coverage meets threshold requirements
+5. Re-run the pipeline after fixes
+
+---
+⚠️ This is a TEST ticket created by the Jira integration test workflow.
+DESCEOF
+)
+              ;;
+
+            "security-vulnerability")
+              SUMMARY="[TEST-SECURITY] voting01-dev: 3 Critical, 5 High vulnerabilities"
+              ISSUE_TYPE="Task"
+              PRIORITY="High"
+              DESCRIPTION=$(cat << DESCEOF
+Test security vulnerability ticket from CI/CD pipeline.
+
+This is a test to verify Jira integration for security scan findings.
+
+Security Scan Results (MOCK DATA):
+┌───────────┬──────────┬──────┐
+│ Service   │ Critical │ High │
+├───────────┼──────────┼──────┤
+│ Vote      │ 1        │ 2    │
+│ Result    │ 1        │ 2    │
+│ Worker    │ 1        │ 1    │
+├───────────┼──────────┼──────┤
+│ TOTAL     │ 3        │ 5    │
+└───────────┴──────────┴──────┘
+
+Test Details:
+- Timestamp: ${TIMESTAMP}
+- Workflow: ${{ github.workflow }}
+- Run ID: ${{ github.run_id }}
+- GitHub: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+---
+⚠️ This is a TEST ticket.
+DESCEOF
+)
+              ;;
+
+            "deployment-failure")
+              SUMMARY="[TEST-DEPLOY] voting01-dev Deployment Failed"
+              ISSUE_TYPE="Task"
+              PRIORITY="High"
+              DESCRIPTION=$(cat << DESCEOF
+Test deployment failure ticket from CI/CD pipeline.
+
+This is a test to verify Jira integration for deployment failures.
+
+Deployment Details (MOCK DATA):
+- Environment: dev
+- Image Tag: abc1234-20240115120000
+- Status: FAILED
+- Reason: Pod scheduling timeout (mock)
+
+Test Details:
+- Timestamp: ${TIMESTAMP}
+- Workflow: ${{ github.workflow }}
+- Run ID: ${{ github.run_id }}
+- GitHub: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+---
+⚠️ This is a TEST ticket.
+DESCEOF
+)
+              ;;
+
+            *)
+              SUMMARY="[TEST] Jira Integration Test - ${TIMESTAMP}"
+              ISSUE_TYPE="Task"
+              PRIORITY="Medium"
+              DESCRIPTION=$(cat << DESCEOF
+Test ticket to verify Jira integration is working correctly.
+
+Test Details:
+- Timestamp: ${TIMESTAMP}
+- Triggered by: ${{ github.actor }}
+- Workflow: ${{ github.workflow }}
+- Run ID: ${{ github.run_id }}
+- Repository: ${{ github.repository }}
+- GitHub: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+---
+⚠️ This is a TEST ticket.
+DESCEOF
+)
+              ;;
+          esac
+
+          # Use jq for safe JSON construction (handles special characters)
+          PAYLOAD=$(jq -n \
+            --arg project "$PROJECT_KEY" \
+            --arg summary "$SUMMARY" \
+            --arg description "$DESCRIPTION" \
+            --arg issuetype "$ISSUE_TYPE" \
+            --arg priority "$PRIORITY" \
+            '{
+              "fields": {
+                "project": {"key": $project},
+                "summary": $summary,
+                "description": $description,
+                "issuetype": {"name": $issuetype},
+                "priority": {"name": $priority}
               }
-            }"
-          else
-            PAYLOAD="{
-              \"fields\": {
-                \"project\": {\"key\": \"${PROJECT_KEY}\"},
-                \"summary\": \"${SUMMARY}\",
-                \"description\": {
-                  \"type\": \"doc\",
-                  \"version\": 1,
-                  \"content\": [
-                    {
-                      \"type\": \"paragraph\",
-                      \"content\": [
-                        {\"type\": \"text\", \"text\": \"${DESCRIPTION}\"}
-                      ]
-                    }
-                  ]
-                },
-                \"issuetype\": {\"name\": \"Bug\"},
-                \"priority\": {\"name\": \"${PRIORITY}\"}
-              }
-            }"
-          fi
+            }')
 
           echo "Creating ticket with API v${API_VERSION}..."
+          echo "Issue Type: ${ISSUE_TYPE}"
+          echo "Priority: ${PRIORITY}"
 
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             -H "${AUTH_HEADER}" \
@@ -271,7 +440,8 @@ jobs:
             echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
             echo "| Issue Key | [${ISSUE_KEY}](${ISSUE_URL}) |" >> $GITHUB_STEP_SUMMARY
             echo "| Issue ID | ${ISSUE_ID} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Type | ${TEST_TYPE} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Type | ${ISSUE_TYPE} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Test Type | ${TEST_TYPE} |" >> $GITHUB_STEP_SUMMARY
             echo "| Priority | ${PRIORITY} |" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "🔗 **[Open Ticket in Jira](${ISSUE_URL})**" >> $GITHUB_STEP_SUMMARY
@@ -284,6 +454,11 @@ jobs:
             echo "**Error Response:**" >> $GITHUB_STEP_SUMMARY
             echo '```json' >> $GITHUB_STEP_SUMMARY
             echo "$BODY" | jq '.' >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "$BODY" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Attempted Payload:**" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            echo "$PAYLOAD" | jq '.' >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
@@ -303,8 +478,16 @@ jobs:
             echo "✅ **Result:** Jira integration working!" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "The CI/CD pipeline can now create Jira tickets for:" >> $GITHUB_STEP_SUMMARY
+            echo "- 📊 Quality gate failures (SonarQube)" >> $GITHUB_STEP_SUMMARY
             echo "- 🔒 Security vulnerability findings" >> $GITHUB_STEP_SUMMARY
             echo "- 🚫 Deployment failures" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Ticket details include:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Failed quality gate conditions" >> $GITHUB_STEP_SUMMARY
+            echo "- Code metrics (bugs, vulnerabilities, coverage, etc.)" >> $GITHUB_STEP_SUMMARY
+            echo "- Top issues from scan with file:line references" >> $GITHUB_STEP_SUMMARY
+            echo "- Links to SonarQube dashboard and workflow" >> $GITHUB_STEP_SUMMARY
+            echo "- Recommended remediation actions" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Result:** Jira ticket creation failed" >> $GITHUB_STEP_SUMMARY
           fi

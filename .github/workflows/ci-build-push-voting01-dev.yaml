@@ -83,6 +83,16 @@ jobs:
       quality_gate_status: ${{ steps.quality-gate.outputs.status }}
       sonar_url: ${{ steps.quality-gate.outputs.dashboard_url }}
       scan_failed: ${{ steps.scan.outcome == 'failure' }}
+      # Detailed metrics for Jira
+      failed_conditions: ${{ steps.quality-gate.outputs.failed_conditions }}
+      bugs: ${{ steps.quality-gate.outputs.bugs }}
+      vulnerabilities: ${{ steps.quality-gate.outputs.vulnerabilities }}
+      code_smells: ${{ steps.quality-gate.outputs.code_smells }}
+      coverage: ${{ steps.quality-gate.outputs.coverage }}
+      duplications: ${{ steps.quality-gate.outputs.duplications }}
+      tech_debt: ${{ steps.quality-gate.outputs.tech_debt }}
+      issues_count: ${{ steps.quality-gate.outputs.issues_count }}
+      issues_list: ${{ steps.quality-gate.outputs.issues_list }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,28 +134,108 @@ jobs:
           # Get quality gate status from SonarQube
           SONAR_HOST="${{ secrets.SONAR_HOST_URL }}"
           PROJECT_KEY="opsera-voting01"
-          
+
+          # Fetch quality gate status with conditions
           RESPONSE=$(curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
             "${SONAR_HOST}/api/qualitygates/project_status?projectKey=${PROJECT_KEY}" || echo '{"projectStatus":{"status":"UNKNOWN"}}')
-          
+
           STATUS=$(echo "$RESPONSE" | jq -r '.projectStatus.status // "UNKNOWN"')
           echo "status=${STATUS}" >> $GITHUB_OUTPUT
           echo "dashboard_url=${SONAR_HOST}/dashboard?id=${PROJECT_KEY}" >> $GITHUB_OUTPUT
-          
+
+          # Extract failed conditions for Jira ticket
+          FAILED_CONDITIONS=$(echo "$RESPONSE" | jq -r '
+            .projectStatus.conditions // []
+            | map(select(.status == "ERROR"))
+            | map("- " + .metricKey + ": actual=" + .actualValue + " (threshold: " + .errorThreshold + ")")
+            | join("\n")' 2>/dev/null || echo "")
+
+          # Store failed conditions (escape newlines for GitHub output)
+          echo "failed_conditions<<EOF" >> $GITHUB_OUTPUT
+          echo "$FAILED_CONDITIONS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Fetch project metrics for detailed reporting
+          METRICS_RESPONSE=$(curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
+            "${SONAR_HOST}/api/measures/component?component=${PROJECT_KEY}&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,ncloc,sqale_index,reliability_rating,security_rating,sqale_rating" || echo '{}')
+
+          # Parse individual metrics
+          BUGS=$(echo "$METRICS_RESPONSE" | jq -r '.component.measures[] | select(.metric=="bugs") | .value // "N/A"' 2>/dev/null || echo "N/A")
+          VULNERABILITIES=$(echo "$METRICS_RESPONSE" | jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value // "N/A"' 2>/dev/null || echo "N/A")
+          CODE_SMELLS=$(echo "$METRICS_RESPONSE" | jq -r '.component.measures[] | select(.metric=="code_smells") | .value // "N/A"' 2>/dev/null || echo "N/A")
+          COVERAGE=$(echo "$METRICS_RESPONSE" | jq -r '.component.measures[] | select(.metric=="coverage") | .value // "N/A"' 2>/dev/null || echo "N/A")
+          DUPLICATIONS=$(echo "$METRICS_RESPONSE" | jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value // "N/A"' 2>/dev/null || echo "N/A")
+          TECH_DEBT=$(echo "$METRICS_RESPONSE" | jq -r '.component.measures[] | select(.metric=="sqale_index") | .value // "N/A"' 2>/dev/null || echo "N/A")
+
+          # Convert tech debt from minutes to human readable
+          if [ "$TECH_DEBT" != "N/A" ] && [ "$TECH_DEBT" != "" ]; then
+            TECH_DEBT_HOURS=$((TECH_DEBT / 60))
+            TECH_DEBT_MINS=$((TECH_DEBT % 60))
+            TECH_DEBT_STR="${TECH_DEBT_HOURS}h ${TECH_DEBT_MINS}m"
+          else
+            TECH_DEBT_STR="N/A"
+          fi
+
+          # Store metrics for Jira
+          echo "bugs=${BUGS}" >> $GITHUB_OUTPUT
+          echo "vulnerabilities=${VULNERABILITIES}" >> $GITHUB_OUTPUT
+          echo "code_smells=${CODE_SMELLS}" >> $GITHUB_OUTPUT
+          echo "coverage=${COVERAGE}" >> $GITHUB_OUTPUT
+          echo "duplications=${DUPLICATIONS}" >> $GITHUB_OUTPUT
+          echo "tech_debt=${TECH_DEBT_STR}" >> $GITHUB_OUTPUT
+
+          # Fetch recent issues (top 10 most severe)
+          ISSUES_RESPONSE=$(curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
+            "${SONAR_HOST}/api/issues/search?componentKeys=${PROJECT_KEY}&statuses=OPEN,CONFIRMED,REOPENED&severities=BLOCKER,CRITICAL,MAJOR&ps=10&s=SEVERITY&asc=false" || echo '{}')
+
+          # Format issues list
+          ISSUES_LIST=$(echo "$ISSUES_RESPONSE" | jq -r '
+            .issues // []
+            | map("- [" + .severity + "] " + .message + " (" + (.component | split(":") | .[-1]) + ":" + (.line // "?" | tostring) + ")")
+            | join("\n")' 2>/dev/null || echo "No issues data available")
+
+          ISSUES_COUNT=$(echo "$ISSUES_RESPONSE" | jq -r '.total // 0' 2>/dev/null || echo "0")
+
+          echo "issues_count=${ISSUES_COUNT}" >> $GITHUB_OUTPUT
+          echo "issues_list<<EOF" >> $GITHUB_OUTPUT
+          echo "$ISSUES_LIST" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Generate summary
           echo "### 📊 SonarQube Quality Gate" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           if [ "$STATUS" = "OK" ]; then
             echo "✅ **Status: PASSED**" >> $GITHUB_STEP_SUMMARY
           elif [ "$STATUS" = "ERROR" ]; then
             echo "❌ **Status: FAILED**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Failed Conditions:**" >> $GITHUB_STEP_SUMMARY
+            echo "$FAILED_CONDITIONS" >> $GITHUB_STEP_SUMMARY
           else
             echo "⚠️ **Status: ${STATUS}**" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Metrics:**" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Bugs | ${BUGS} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Vulnerabilities | ${VULNERABILITIES} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Code Smells | ${CODE_SMELLS} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Coverage | ${COVERAGE}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| Duplications | ${DUPLICATIONS}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tech Debt | ${TECH_DEBT_STR} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$STATUS" = "ERROR" ] && [ -n "$ISSUES_LIST" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Top Issues (${ISSUES_COUNT} total):**" >> $GITHUB_STEP_SUMMARY
+            echo "$ISSUES_LIST" >> $GITHUB_STEP_SUMMARY
+          fi
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "[View Dashboard](${SONAR_HOST}/dashboard?id=${PROJECT_KEY})" >> $GITHUB_STEP_SUMMARY
-          
+
           # Fail if blocking mode and quality gate failed
           if [ "${{ github.event.inputs.quality_gate_mode }}" = "blocking" ] && [ "$STATUS" = "ERROR" ]; then
             echo "❌ Quality gate failed in blocking mode"
@@ -637,28 +727,82 @@ jobs:
 
           PROJECT_KEY="${JIRA_PROJECT:-TEST}"
 
-          DESCRIPTION="SonarQube quality gate check failed for voting01-dev.
+          # Build comprehensive description with all error details
+          DESCRIPTION=$(cat << 'DESCEOF'
+SonarQube quality gate check FAILED for voting01-dev.
 
-          Details:
-          - Dashboard: ${{ needs.quality-sonarqube.outputs.sonar_url }}
-          - Status: ${{ needs.quality-sonarqube.outputs.quality_gate_status }}
-          - Commit: ${{ github.sha }}
-          - Branch: ${{ github.ref_name }}
-          - Triggered by: ${{ github.actor }}
+═══════════════════════════════════════
+QUALITY GATE STATUS: ${{ needs.quality-sonarqube.outputs.quality_gate_status }}
+═══════════════════════════════════════
 
-          Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+📊 FAILED CONDITIONS:
+${{ needs.quality-sonarqube.outputs.failed_conditions }}
+
+📈 CODE METRICS:
+┌─────────────────┬────────────┐
+│ Metric          │ Value      │
+├─────────────────┼────────────┤
+│ Bugs            │ ${{ needs.quality-sonarqube.outputs.bugs }}         │
+│ Vulnerabilities │ ${{ needs.quality-sonarqube.outputs.vulnerabilities }}         │
+│ Code Smells     │ ${{ needs.quality-sonarqube.outputs.code_smells }}         │
+│ Coverage        │ ${{ needs.quality-sonarqube.outputs.coverage }}%        │
+│ Duplications    │ ${{ needs.quality-sonarqube.outputs.duplications }}%        │
+│ Tech Debt       │ ${{ needs.quality-sonarqube.outputs.tech_debt }}      │
+└─────────────────┴────────────┘
+
+🐛 TOP ISSUES (${{ needs.quality-sonarqube.outputs.issues_count }} total):
+${{ needs.quality-sonarqube.outputs.issues_list }}
+
+═══════════════════════════════════════
+BUILD CONTEXT:
+═══════════════════════════════════════
+- Commit: ${{ github.sha }}
+- Branch: ${{ github.ref_name }}
+- Triggered by: ${{ github.actor }}
+- Event: ${{ github.event_name }}
+
+🔗 LINKS:
+- SonarQube Dashboard: ${{ needs.quality-sonarqube.outputs.sonar_url }}
+- GitHub Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+═══════════════════════════════════════
+RECOMMENDED ACTIONS:
+═══════════════════════════════════════
+1. Review the failed conditions above
+2. Click the SonarQube Dashboard link for full issue details
+3. Fix issues in priority order: Bugs > Vulnerabilities > Code Smells
+4. Ensure coverage meets threshold requirements
+5. Re-run the pipeline after fixes
+DESCEOF
+)
+
+          # Determine priority based on metrics
+          BUGS="${{ needs.quality-sonarqube.outputs.bugs }}"
+          VULNS="${{ needs.quality-sonarqube.outputs.vulnerabilities }}"
+          if [ "${BUGS:-0}" -gt 0 ] || [ "${VULNS:-0}" -gt 0 ]; then
+            PRIORITY="Highest"
+          else
+            PRIORITY="High"
+          fi
+
+          # Create summary with bug/vuln count if available
+          SUMMARY="[QUALITY] voting01-dev: Quality Gate Failed"
+          if [ "${BUGS:-0}" != "N/A" ] && [ "${VULNS:-0}" != "N/A" ]; then
+            SUMMARY="[QUALITY] voting01-dev: ${BUGS} bugs, ${VULNS} vulns - Quality Gate Failed"
+          fi
 
           PAYLOAD=$(jq -n \
             --arg project "$PROJECT_KEY" \
-            --arg summary "[QUALITY] voting01-dev: SonarQube Quality Gate Failed" \
+            --arg summary "$SUMMARY" \
             --arg description "$DESCRIPTION" \
+            --arg priority "$PRIORITY" \
             '{
               "fields": {
                 "project": {"key": $project},
                 "summary": $summary,
                 "description": $description,
-                "issuetype": {"name": "Task"},
-                "priority": {"name": "High"}
+                "issuetype": {"name": "Bug"},
+                "priority": {"name": $priority}
               }
             }')
 
@@ -676,9 +820,24 @@ jobs:
             echo "### 📊 Jira Quality Gate Issue Created" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Issue:** [$ISSUE_KEY](${JIRA_BASE_URL}/browse/${ISSUE_KEY})" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Details included in ticket:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Failed quality gate conditions" >> $GITHUB_STEP_SUMMARY
+            echo "- Code metrics (bugs, vulnerabilities, coverage, etc.)" >> $GITHUB_STEP_SUMMARY
+            echo "- Top ${{ needs.quality-sonarqube.outputs.issues_count }} issues from scan" >> $GITHUB_STEP_SUMMARY
+            echo "- Links to SonarQube dashboard and workflow" >> $GITHUB_STEP_SUMMARY
           else
             echo "⚠️ Failed to create Jira issue (HTTP $HTTP_CODE)" >> $GITHUB_STEP_SUMMARY
-            echo "Response: $BODY" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Error Response:**" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            echo "$BODY" | jq '.' >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "$BODY" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Attempted Payload:**" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            echo "$PAYLOAD" | jq '.' >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
           fi
 
   # ═══════════════════════════════════════════════════════════════════════════════
