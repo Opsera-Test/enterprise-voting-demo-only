@@ -34,6 +34,9 @@ jobs:
       qa_version: ${{ steps.versions.outputs.qa }}
       staging_version: ${{ steps.versions.outputs.staging }}
       in_sync: ${{ steps.versions.outputs.in_sync }}
+      dev_history: ${{ steps.history.outputs.dev_history }}
+      qa_history: ${{ steps.history.outputs.qa_history }}
+      staging_history: ${{ steps.history.outputs.staging_history }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,6 +58,31 @@ jobs:
           else
             echo "in_sync=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Collect Deployment History
+        id: history
+        run: |
+          # Function to get deployment history for an environment
+          get_history() {
+            local env=$1
+            git log --oneline --grep="deploy(voting01-${env}):" --format="%H|%s|%ci" -n 5 2>/dev/null | while read line; do
+              if [ -n "$line" ]; then
+                SHA=$(echo "$line" | cut -d'|' -f1)
+                SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+                MSG=$(echo "$line" | cut -d'|' -f2 | sed 's/deploy(voting01-'${env}'): //' | sed 's/ \[skip ci\]//')
+                DATE=$(echo "$line" | cut -d'|' -f3 | cut -d' ' -f1,2)
+                echo "${SHORT_SHA}::${MSG}::${DATE}"
+              fi
+            done | tr '\n' ';;' | sed 's/;;$//'
+          }
+
+          DEV_HIST=$(get_history "dev")
+          QA_HIST=$(get_history "qa")
+          STAGING_HIST=$(get_history "staging")
+
+          echo "dev_history=${DEV_HIST}" >> $GITHUB_OUTPUT
+          echo "qa_history=${QA_HIST}" >> $GITHUB_OUTPUT
+          echo "staging_history=${STAGING_HIST}" >> $GITHUB_OUTPUT
 
   # ═══════════════════════════════════════════════════════════════════════════════
   # COLLECT CLUSTER METRICS
@@ -342,6 +370,47 @@ jobs:
           echo "| 🧪 **QA** | $(version_link "$QA_V") | ${QA_P:-0} | $(health_icon $QA_H) | 🐤 Canary |" >> $GITHUB_STEP_SUMMARY
           echo "| 🎭 **STAGING** | $(version_link "$STG_V") | ${STG_P:-0} | $(health_icon $STG_H) | 🔵🟢 Blue-Green |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Deployment History
+        env:
+          DEV_HIST: ${{ needs.collect-data.outputs.dev_history }}
+          QA_HIST: ${{ needs.collect-data.outputs.qa_history }}
+          STG_HIST: ${{ needs.collect-data.outputs.staging_history }}
+          REPO_URL: https://github.com/${{ env.GITHUB_REPO }}
+        run: |
+          # Function to render deployment history table
+          render_history() {
+            local env_name=$1
+            local env_icon=$2
+            local history=$3
+
+            echo "#### ${env_icon} ${env_name}" >> $GITHUB_STEP_SUMMARY
+            echo "| # | Commit | Image Tag | Date |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|--------|-----------|------|" >> $GITHUB_STEP_SUMMARY
+
+            if [ -z "$history" ]; then
+              echo "| - | No deployments found | - | - |" >> $GITHUB_STEP_SUMMARY
+            else
+              count=1
+              echo "$history" | tr ';;' '\n' | while read entry; do
+                if [ -n "$entry" ]; then
+                  SHA=$(echo "$entry" | cut -d'::' -f1)
+                  TAG=$(echo "$entry" | cut -d'::' -f2)
+                  DATE=$(echo "$entry" | cut -d'::' -f3)
+                  echo "| ${count} | [\`${SHA}\`](${REPO_URL}/commit/${SHA}) | \`${TAG}\` | ${DATE} |" >> $GITHUB_STEP_SUMMARY
+                  count=$((count + 1))
+                fi
+              done
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+          }
+
+          echo "## 📜 Deployment History (Last 5)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          render_history "DEV" "🔧" "$DEV_HIST"
+          render_history "QA" "🧪" "$QA_HIST"
+          render_history "STAGING" "🎭" "$STG_HIST"
 
       - name: Quick Links
         env:
