@@ -27,6 +27,9 @@ data:
   # NEW RELIC APM CONFIGURATION
   # ═══════════════════════════════════════════════════════════════════════════════
 
+  # Mock Server Configuration (override default collector.newrelic.com)
+  NEW_RELIC_HOST: "opsera-opsera-newrelic-dev.agent.opsera.dev"
+
   # Common Settings (All Services)
   NEW_RELIC_DISTRIBUTED_TRACING_ENABLED: "true"
   NEW_RELIC_LOG_LEVEL: "info"
