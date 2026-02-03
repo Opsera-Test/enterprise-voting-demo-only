@@ -297,20 +297,74 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Force Sync
+      - name: Install Argo Rollouts kubectl plugin
         run: |
-          aws eks update-kubeconfig --name ${{ env.HUB_CLUSTER }} --region ${{ env.AWS_REGION }}
-          APP="${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}"
+          curl -LO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+          chmod +x kubectl-argo-rollouts-linux-amd64
+          sudo mv kubectl-argo-rollouts-linux-amd64 /usr/local/bin/kubectl-argo-rollouts
 
-          echo "### ⚡ Force Sync: $APP" >> $GITHUB_STEP_SUMMARY
+      - name: Force Sync and Retry Rollouts
+        run: |
+          # Determine environments to process
+          if [ "${{ inputs.environment }}" = "all" ]; then
+            ENVS="dev qa staging"
+          else
+            ENVS="${{ inputs.environment }}"
+          fi
 
-          kubectl annotate application $APP -n argocd argocd.argoproj.io/refresh=hard --overwrite
-          echo "✅ Sync triggered" >> $GITHUB_STEP_SUMMARY
+          echo "### ⚡ Force Sync & Retry Rollouts" >> $GITHUB_STEP_SUMMARY
 
-          sleep 30
+          for ENV in $ENVS; do
+            APP="${{ env.APP_NAME }}-${ENV}"
+            NS="${{ env.APP_NAME }}-${ENV}"
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### Environment: ${ENV}" >> $GITHUB_STEP_SUMMARY
 
-          STATUS=$(kubectl get application $APP -n argocd -o jsonpath='{.status.sync.status}')
-          HEALTH=$(kubectl get application $APP -n argocd -o jsonpath='{.status.health.status}')
+            # Force sync ArgoCD application
+            aws eks update-kubeconfig --name ${{ env.HUB_CLUSTER }} --region ${{ env.AWS_REGION }}
+            echo "Triggering ArgoCD sync for $APP..."
+            kubectl annotate application $APP -n argocd argocd.argoproj.io/refresh=hard --overwrite 2>/dev/null || echo "App $APP not found"
+            
+            # Switch to spoke cluster and retry rollouts
+            aws eks update-kubeconfig --name ${{ env.SPOKE_CLUSTER }} --region ${{ env.AWS_REGION }}
+            
+            echo "Retrying degraded rollouts in $NS..."
+            for SERVICE in vote result worker; do
+              PHASE=$(kubectl get rollout $SERVICE -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+              echo "$SERVICE rollout: $PHASE"
+              
+              if [ "$PHASE" = "Degraded" ] || [ "$PHASE" = "Paused" ]; then
+                echo "Retrying $SERVICE rollout..."
+                kubectl-argo-rollouts retry rollout $SERVICE -n $NS 2>/dev/null || true
+                echo "- $SERVICE: ⚡ Retry triggered" >> $GITHUB_STEP_SUMMARY
+              elif [ "$PHASE" = "Healthy" ]; then
+                echo "- $SERVICE: ✅ Already healthy" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "- $SERVICE: $PHASE" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          done
 
-          echo "- Sync: **$STATUS**" >> $GITHUB_STEP_SUMMARY
-          echo "- Health: **$HEALTH**" >> $GITHUB_STEP_SUMMARY
+          # Wait for rollouts to progress
+          echo ""
+          echo "Waiting 60s for rollouts to progress..."
+          sleep 60
+
+          # Check final status
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Final Status" >> $GITHUB_STEP_SUMMARY
+          
+          for ENV in $ENVS; do
+            NS="${{ env.APP_NAME }}-${ENV}"
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**${ENV}:**" >> $GITHUB_STEP_SUMMARY
+            for SERVICE in vote result worker; do
+              PHASE=$(kubectl get rollout $SERVICE -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+              if [ "$PHASE" = "Healthy" ]; then
+                echo "- $SERVICE: ✅ $PHASE" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "- $SERVICE: ⚠️ $PHASE" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          done
