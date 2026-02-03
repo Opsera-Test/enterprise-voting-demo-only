@@ -965,6 +965,7 @@ Track all updates to this learning guide.
 
 | Date | Version | Changes |
 |------|---------|---------|
+| 2026-02-03 | 1.2 | Added Issue #8 (skip bot commits) and Issue #9 (git pull --rebase) fixes |
 | 2026-02-03 | 1.2 | Added Phase 6 - README auto-update dashboard with relative time, owner, and last 5 deployments |
 | 2026-02-03 | 1.2 | Test workflow execution - verify auto-update mechanism |
 | 2026-02-03 | 1.0 | Initial creation with Jira integration learnings |
