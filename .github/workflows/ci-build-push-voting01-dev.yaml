@@ -1,6 +1,7 @@
 # ════════════════════════════════════════════════════════════════════════════════
 # CI BUILD & DEPLOY - voting01 DEV
 # Security: Gitleaks + Grype | Quality: SonarQube | Notify: Slack + Jira
+# Enhanced with Prometheus, improved Slack & SonarQube integration
 # ════════════════════════════════════════════════════════════════════════════════
 
 name: "CI Build (voting01-dev)"
@@ -18,6 +19,11 @@ on:
         type: choice
         options: ['blocking', 'non-blocking', 'skip']
         default: 'non-blocking'
+      notify_on:
+        description: 'When to send notifications'
+        type: choice
+        options: ['always', 'failure', 'success', 'never']
+        default: 'always'
       runner:
         description: 'Runner type'
         type: choice
@@ -41,6 +47,7 @@ env:
 permissions:
   contents: write
   security-events: write
+  pull-requests: write
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════════════════
@@ -63,21 +70,36 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ═══════════════════════════════════════════════════════════════════════════════
-  # QUALITY GATES
+  # QUALITY GATES - SonarQube with Quality Gate Status
   # ═══════════════════════════════════════════════════════════════════════════════
 
   quality-sonarqube:
     name: "📊 SonarQube"
     runs-on: ${{ github.event.inputs.runner == 'github-hosted' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "opsera"]') }}
     if: github.event.inputs.quality_gate_mode != 'skip'
-    continue-on-error: true
+    continue-on-error: ${{ github.event.inputs.quality_gate_mode == 'non-blocking' }}
+    outputs:
+      quality_gate_status: ${{ steps.quality-gate.outputs.status }}
+      sonar_url: ${{ steps.quality-gate.outputs.dashboard_url }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Check SonarQube Configuration
+        id: check-sonar
+        run: |
+          if [ -n "${{ secrets.SONAR_TOKEN }}" ] && [ -n "${{ secrets.SONAR_HOST_URL }}" ]; then
+            echo "configured=true" >> $GITHUB_OUTPUT
+            echo "✅ SonarQube secrets configured" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "⚠️ SonarQube secrets not configured - skipping scan" >> $GITHUB_STEP_SUMMARY
+            echo "Required secrets: SONAR_TOKEN, SONAR_HOST_URL" >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: SonarQube Scan
-        if: env.SONAR_TOKEN != ''
+        if: steps.check-sonar.outputs.configured == 'true'
         uses: sonarsource/sonarqube-scan-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -85,7 +107,46 @@ jobs:
         with:
           args: >
             -Dsonar.projectKey=opsera-voting01
+            -Dsonar.projectName=voting01
             -Dsonar.sources=vote,result,worker
+            -Dsonar.python.version=3.9
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.qualitygate.wait=true
+
+      - name: Check Quality Gate Status
+        id: quality-gate
+        if: steps.check-sonar.outputs.configured == 'true'
+        run: |
+          # Get quality gate status from SonarQube
+          SONAR_HOST="${{ secrets.SONAR_HOST_URL }}"
+          PROJECT_KEY="opsera-voting01"
+          
+          RESPONSE=$(curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
+            "${SONAR_HOST}/api/qualitygates/project_status?projectKey=${PROJECT_KEY}" || echo '{"projectStatus":{"status":"UNKNOWN"}}')
+          
+          STATUS=$(echo "$RESPONSE" | jq -r '.projectStatus.status // "UNKNOWN"')
+          echo "status=${STATUS}" >> $GITHUB_OUTPUT
+          echo "dashboard_url=${SONAR_HOST}/dashboard?id=${PROJECT_KEY}" >> $GITHUB_OUTPUT
+          
+          echo "### 📊 SonarQube Quality Gate" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$STATUS" = "OK" ]; then
+            echo "✅ **Status: PASSED**" >> $GITHUB_STEP_SUMMARY
+          elif [ "$STATUS" = "ERROR" ]; then
+            echo "❌ **Status: FAILED**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Status: ${STATUS}**" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View Dashboard](${SONAR_HOST}/dashboard?id=${PROJECT_KEY})" >> $GITHUB_STEP_SUMMARY
+          
+          # Fail if blocking mode and quality gate failed
+          if [ "${{ github.event.inputs.quality_gate_mode }}" = "blocking" ] && [ "$STATUS" = "ERROR" ]; then
+            echo "❌ Quality gate failed in blocking mode"
+            exit 1
+          fi
 
   # ═══════════════════════════════════════════════════════════════════════════════
   # BUILD & PUSH
@@ -253,45 +314,147 @@ jobs:
           echo "success=false" >> $GITHUB_OUTPUT
 
   # ═══════════════════════════════════════════════════════════════════════════════
-  # NOTIFICATIONS
+  # NOTIFICATIONS - Slack & Jira with Enhanced Formatting
   # ═══════════════════════════════════════════════════════════════════════════════
 
   notify-slack:
-    name: "📢 Slack"
-    needs: [deploy]
-    if: always()
+    name: "📢 Slack Notification"
+    needs: [security-gitleaks, quality-sonarqube, build, deploy]
+    if: |
+      always() && (
+        github.event.inputs.notify_on == 'always' ||
+        (github.event.inputs.notify_on == 'failure' && contains(needs.*.result, 'failure')) ||
+        (github.event.inputs.notify_on == 'success' && !contains(needs.*.result, 'failure')) ||
+        (github.event.inputs.notify_on == '' && true)
+      )
     runs-on: ${{ github.event.inputs.runner == 'github-hosted' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "opsera"]') }}
     steps:
+      - name: Check Slack Configuration
+        id: check-slack
+        run: |
+          if [ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            echo "configured=true" >> $GITHUB_OUTPUT
+          else
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Slack webhook not configured - skipping notification" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Determine Status
+        id: status
+        if: steps.check-slack.outputs.configured == 'true'
+        run: |
+          # Check overall pipeline status
+          DEPLOY_SUCCESS="${{ needs.deploy.outputs.success }}"
+          SECURITY_RESULT="${{ needs.security-gitleaks.result }}"
+          QUALITY_RESULT="${{ needs.quality-sonarqube.result }}"
+          BUILD_RESULT="${{ needs.build.result }}"
+          
+          if [ "$DEPLOY_SUCCESS" = "true" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "emoji=✅" >> $GITHUB_OUTPUT
+            echo "color=#36a64f" >> $GITHUB_OUTPUT
+            echo "title=DEV Deployment Succeeded" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "emoji=❌" >> $GITHUB_OUTPUT
+            echo "color=#dc3545" >> $GITHUB_OUTPUT
+            echo "title=DEV Deployment Failed" >> $GITHUB_OUTPUT
+          fi
+          
+          # Security status
+          if [ "$SECURITY_RESULT" = "success" ]; then
+            echo "security_icon=✅" >> $GITHUB_OUTPUT
+          elif [ "$SECURITY_RESULT" = "skipped" ]; then
+            echo "security_icon=⏭️" >> $GITHUB_OUTPUT
+          else
+            echo "security_icon=⚠️" >> $GITHUB_OUTPUT
+          fi
+          
+          # Quality status
+          QUALITY_GATE="${{ needs.quality-sonarqube.outputs.quality_gate_status }}"
+          if [ "$QUALITY_GATE" = "OK" ]; then
+            echo "quality_icon=✅" >> $GITHUB_OUTPUT
+          elif [ "$QUALITY_RESULT" = "skipped" ]; then
+            echo "quality_icon=⏭️" >> $GITHUB_OUTPUT
+          else
+            echo "quality_icon=⚠️" >> $GITHUB_OUTPUT
+          fi
+
       - name: Send Slack Notification
-        if: env.SLACK_WEBHOOK_URL != ''
+        if: steps.check-slack.outputs.configured == 'true'
         uses: slackapi/slack-github-action@v1
         with:
           payload: |
             {
-              "blocks": [
+              "attachments": [
                 {
-                  "type": "header",
-                  "text": {
-                    "type": "plain_text",
-                    "text": "${{ needs.deploy.outputs.success == 'true' && '✅ Deployment Succeeded' || '❌ Deployment Failed' }}"
-                  }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    {"type": "mrkdwn", "text": "*App:*\nvoting01"},
-                    {"type": "mrkdwn", "text": "*Environment:*\ndev"},
-                    {"type": "mrkdwn", "text": "*Commit:*\n${{ github.sha }}"},
-                    {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
+                  "color": "${{ steps.status.outputs.color }}",
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "${{ steps.status.outputs.emoji }} ${{ steps.status.outputs.title }}",
+                        "emoji": true
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {"type": "mrkdwn", "text": "*Application:*\n`voting01`"},
+                        {"type": "mrkdwn", "text": "*Environment:*\n`dev`"},
+                        {"type": "mrkdwn", "text": "*Image Tag:*\n`${{ needs.build.outputs.image_tag }}`"},
+                        {"type": "mrkdwn", "text": "*Triggered By:*\n${{ github.actor }}"}
+                      ]
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {"type": "mrkdwn", "text": "*Security Scan:*\n${{ steps.status.outputs.security_icon }} ${{ needs.security-gitleaks.result }}"},
+                        {"type": "mrkdwn", "text": "*Quality Gate:*\n${{ steps.status.outputs.quality_icon }} ${{ needs.quality-sonarqube.outputs.quality_gate_status || 'N/A' }}"},
+                        {"type": "mrkdwn", "text": "*Build:*\n${{ needs.build.result == 'success' && '✅' || '❌' }} ${{ needs.build.result }}"},
+                        {"type": "mrkdwn", "text": "*Deploy:*\n${{ needs.deploy.outputs.success == 'true' && '✅' || '❌' }} ${{ needs.deploy.outputs.success == 'true' && 'success' || 'failed' }}"}
+                      ]
+                    },
+                    {
+                      "type": "context",
+                      "elements": [
+                        {"type": "mrkdwn", "text": "*Commit:* `${{ github.sha }}`"},
+                        {"type": "mrkdwn", "text": "*Branch:* `${{ github.ref_name }}`"}
+                      ]
+                    },
+                    {
+                      "type": "divider"
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Application URLs:*\n• <https://vote-voting01-dev.agent.opsera.dev|Vote App>\n• <https://result-voting01-dev.agent.opsera.dev|Result App>"
+                      }
+                    },
+                    {
+                      "type": "actions",
+                      "elements": [
+                        {
+                          "type": "button",
+                          "text": {"type": "plain_text", "text": "View Workflow", "emoji": true},
+                          "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                          "style": "primary"
+                        },
+                        {
+                          "type": "button",
+                          "text": {"type": "plain_text", "text": "View Commit", "emoji": true},
+                          "url": "${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+                        },
+                        {
+                          "type": "button",
+                          "text": {"type": "plain_text", "text": "SonarQube", "emoji": true},
+                          "url": "${{ needs.quality-sonarqube.outputs.sonar_url || secrets.SONAR_HOST_URL }}"
+                        }
+                      ]
+                    }
                   ]
-                },
-                {
-                  "type": "actions",
-                  "elements": [{
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "View Workflow"},
-                    "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                  }]
                 }
               ]
             }
@@ -299,23 +462,49 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   notify-jira:
-    name: "📋 Jira"
-    needs: [deploy]
+    name: "📋 Jira Issue"
+    needs: [build, deploy]
     if: always() && needs.deploy.outputs.success == 'false'
     runs-on: ${{ github.event.inputs.runner == 'github-hosted' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "opsera"]') }}
     continue-on-error: true
     steps:
-      - name: Create Jira Issue
-        if: env.JIRA_API_TOKEN != '' && env.JIRA_BASE_URL != ''
+      - name: Check Jira Configuration
+        id: check-jira
         run: |
-          curl -X POST \
+          CONFIGURED="true"
+          MISSING=""
+          
+          if [ -z "${{ secrets.JIRA_API_TOKEN }}" ]; then
+            CONFIGURED="false"
+            MISSING="${MISSING} JIRA_API_TOKEN"
+          fi
+          if [ -z "${{ secrets.JIRA_EMAIL }}" ]; then
+            CONFIGURED="false"
+            MISSING="${MISSING} JIRA_EMAIL"
+          fi
+          if [ -z "${{ secrets.JIRA_BASE_URL }}" ]; then
+            CONFIGURED="false"
+            MISSING="${MISSING} JIRA_BASE_URL"
+          fi
+          
+          echo "configured=${CONFIGURED}" >> $GITHUB_OUTPUT
+          
+          if [ "$CONFIGURED" = "false" ]; then
+            echo "⚠️ Jira not configured - missing:${MISSING}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Create Jira Issue
+        if: steps.check-jira.outputs.configured == 'true'
+        run: |
+          # Create deployment failure issue
+          RESPONSE=$(curl -s -X POST \
             -H "Authorization: Basic $(echo -n '${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}' | base64)" \
             -H "Content-Type: application/json" \
             "${{ secrets.JIRA_BASE_URL }}/rest/api/3/issue" \
             -d '{
               "fields": {
                 "project": {"key": "DEPLOY"},
-                "summary": "Deployment Failed: voting01-dev",
+                "summary": "[voting01-dev] Deployment Failed - ${{ github.sha }}",
                 "description": {
                   "type": "doc",
                   "version": 1,
@@ -323,14 +512,55 @@ jobs:
                     {
                       "type": "paragraph",
                       "content": [
-                        {"type": "text", "text": "Deployment failed for voting01-dev. Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+                        {"type": "text", "text": "Deployment failed for voting01-dev environment."}
+                      ]
+                    },
+                    {
+                      "type": "heading",
+                      "attrs": {"level": 3},
+                      "content": [{"type": "text", "text": "Details"}]
+                    },
+                    {
+                      "type": "bulletList",
+                      "content": [
+                        {
+                          "type": "listItem",
+                          "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Commit: ${{ github.sha }}"}]}]
+                        },
+                        {
+                          "type": "listItem",
+                          "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Branch: ${{ github.ref_name }}"}]}]
+                        },
+                        {
+                          "type": "listItem",
+                          "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Triggered by: ${{ github.actor }}"}]}]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {"type": "text", "text": "Workflow: "},
+                        {"type": "text", "text": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}", "marks": [{"type": "link", "attrs": {"href": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}}]}
                       ]
                     }
                   ]
                 },
-                "issuetype": {"name": "Bug"}
+                "issuetype": {"name": "Bug"},
+                "priority": {"name": "High"},
+                "labels": ["deployment-failure", "voting01", "dev"]
               }
-            }' || echo "Jira notification skipped"
+            }')
+          
+          ISSUE_KEY=$(echo "$RESPONSE" | jq -r '.key // "FAILED"')
+          
+          if [ "$ISSUE_KEY" != "FAILED" ] && [ "$ISSUE_KEY" != "null" ]; then
+            echo "### 📋 Jira Issue Created" >> $GITHUB_STEP_SUMMARY
+            echo "Issue: [$ISSUE_KEY](${{ secrets.JIRA_BASE_URL }}/browse/${ISSUE_KEY})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Failed to create Jira issue" >> $GITHUB_STEP_SUMMARY
+            echo "Response: $RESPONSE" >> $GITHUB_STEP_SUMMARY
+          fi
         env:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}

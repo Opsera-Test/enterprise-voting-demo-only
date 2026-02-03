@@ -1,3 +1,7 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# PROMETHEUS-BASED ANALYSIS TEMPLATE - QA Canary
+# Auto-rollback if error rate > 5% (success rate < 95%)
+# ════════════════════════════════════════════════════════════════════════════════
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
 metadata:
@@ -10,7 +14,23 @@ spec:
     - name: service-name
     - name: namespace
   metrics:
-    - name: http-success-rate
+    # Primary: Prometheus-based error rate monitoring
+    - name: prometheus-error-rate
+      interval: 30s
+      count: 10
+      # Success if error rate < 5% (success rate >= 95%)
+      successCondition: result[0] >= 0.95
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus-server.monitoring.svc.cluster.local:9090
+          query: |
+            sum(rate(nginx_ingress_controller_requests{namespace="{{args.namespace}}",service="{{args.service-name}}",status!~"5.."}[1m]))
+            /
+            sum(rate(nginx_ingress_controller_requests{namespace="{{args.namespace}}",service="{{args.service-name}}"}[1m]))
+
+    # Fallback: HTTP health check (runs in parallel)
+    - name: http-health-check
       interval: 30s
       count: 10
       successCondition: result == "healthy"
@@ -28,7 +48,7 @@ spec:
                     command: ["/bin/sh", "-c"]
                     args:
                       - |
-                        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://{{args.service-name}}.{{args.namespace}}.svc.cluster.local/")
+                        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://{{args.service-name}}.{{args.namespace}}.svc.cluster.local/" --max-time 10)
                         if [ "$HTTP_CODE" = "200" ]; then
                           echo "healthy"
                           exit 0
