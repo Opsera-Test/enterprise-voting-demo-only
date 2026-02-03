@@ -13,5 +13,5 @@ resources:
   - result-service.yaml
   - worker-deployment.yaml
   - ingress.yaml
-  - newrelic-secret.yaml
+# Note: newrelic-license secret is created dynamically by CI/CD pipeline
 # ConfigMap and ServiceAccounts are in overlays (environment-specific)
