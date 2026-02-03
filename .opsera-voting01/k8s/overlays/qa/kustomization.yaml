@@ -14,8 +14,10 @@ resources:
   - result-canary-service.yaml
   - analysis-template.yaml
 
-commonLabels:
-  environment: qa
+labels:
+  - pairs:
+      environment: qa
+    includeSelectors: false
 
 patches:
   # Remove base Deployments (replaced by Rollouts)
@@ -46,6 +48,23 @@ patches:
       kind: Deployment
       metadata:
         name: worker
+  # Fix service selectors to match rollout pods (remove inherited labels)
+  - target:
+      kind: Service
+      name: vote
+    patch: |-
+      - op: replace
+        path: /spec/selector
+        value:
+          app: vote
+  - target:
+      kind: Service
+      name: result
+    patch: |-
+      - op: replace
+        path: /spec/selector
+        value:
+          app: result
   # Update Ingress hosts for QA
   - target:
       kind: Ingress
