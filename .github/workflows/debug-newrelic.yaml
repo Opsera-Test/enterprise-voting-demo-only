@@ -114,6 +114,34 @@ jobs:
             echo "Vote pod not found" >> $GITHUB_STEP_SUMMARY
           fi
 
+      - name: Check Worker Pod Env Vars
+        run: |
+          NS="${{ env.APP_NAME }}-${{ github.event.inputs.environment }}"
+          WORKER_POD=$(kubectl get pods -n $NS -l app=worker -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
+          echo "### ⚙️ Worker Pod Environment (.NET)" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$WORKER_POD" ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            kubectl exec $WORKER_POD -n $NS -- env | grep -iE "NEW_RELIC|CORECLR" | sort >> $GITHUB_STEP_SUMMARY || echo "No NEW_RELIC/CORECLR env vars" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Worker pod not found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check Worker Pod Logs
+        run: |
+          NS="${{ env.APP_NAME }}-${{ github.event.inputs.environment }}"
+          WORKER_POD=$(kubectl get pods -n $NS -l app=worker -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
+          echo "### 📜 Worker Pod Logs (last 50 lines)" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$WORKER_POD" ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            kubectl logs $WORKER_POD -n $NS --tail=50 >> $GITHUB_STEP_SUMMARY 2>&1
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Worker pod not found" >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: Test New Relic Connectivity
         run: |
           NS="${{ env.APP_NAME }}-${{ github.event.inputs.environment }}"
