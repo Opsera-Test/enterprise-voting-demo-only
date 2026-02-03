@@ -135,6 +135,7 @@ resource "aws_elasticache_cluster" "redis" {
 }
 
 # IRSA Role for Vote Service
+# Trust policy allows DEV, QA, and Staging namespaces to share infrastructure
 resource "aws_iam_role" "vote" {
   name = "${local.name_prefix}-vote-irsa"
 
@@ -147,8 +148,8 @@ resource "aws_iam_role" "vote" {
       }
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
-        StringEquals = {
-          "${replace(var.eks_oidc_provider_arn, "/^arn:aws:iam::[0-9]+:oidc-provider\\//", "")}:sub" = "system:serviceaccount:${local.name_prefix}:vote-sa"
+        StringLike = {
+          "${replace(var.eks_oidc_provider_arn, "/^arn:aws:iam::[0-9]+:oidc-provider\\//", "")}:sub" = "system:serviceaccount:${var.app_name}-*:vote-sa"
         }
       }
     }]
@@ -172,6 +173,7 @@ resource "aws_iam_role_policy" "vote" {
 }
 
 # IRSA Role for Result Service
+# Trust policy allows DEV, QA, and Staging namespaces to share infrastructure
 resource "aws_iam_role" "result" {
   name = "${local.name_prefix}-result-irsa"
 
@@ -184,8 +186,8 @@ resource "aws_iam_role" "result" {
       }
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
-        StringEquals = {
-          "${replace(var.eks_oidc_provider_arn, "/^arn:aws:iam::[0-9]+:oidc-provider\\//", "")}:sub" = "system:serviceaccount:${local.name_prefix}:result-sa"
+        StringLike = {
+          "${replace(var.eks_oidc_provider_arn, "/^arn:aws:iam::[0-9]+:oidc-provider\\//", "")}:sub" = "system:serviceaccount:${var.app_name}-*:result-sa"
         }
       }
     }]
@@ -216,6 +218,7 @@ resource "aws_iam_role_policy" "result" {
 }
 
 # IRSA Role for Worker Service
+# Trust policy allows DEV, QA, and Staging namespaces to share infrastructure
 resource "aws_iam_role" "worker" {
   name = "${local.name_prefix}-worker-irsa"
 
@@ -228,8 +231,8 @@ resource "aws_iam_role" "worker" {
       }
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
-        StringEquals = {
-          "${replace(var.eks_oidc_provider_arn, "/^arn:aws:iam::[0-9]+:oidc-provider\\//", "")}:sub" = "system:serviceaccount:${local.name_prefix}:worker-sa"
+        StringLike = {
+          "${replace(var.eks_oidc_provider_arn, "/^arn:aws:iam::[0-9]+:oidc-provider\\//", "")}:sub" = "system:serviceaccount:${var.app_name}-*:worker-sa"
         }
       }
     }]
