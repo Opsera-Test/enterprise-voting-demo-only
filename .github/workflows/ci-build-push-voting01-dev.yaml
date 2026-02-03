@@ -728,53 +728,40 @@ jobs:
           PROJECT_KEY="${JIRA_PROJECT:-TEST}"
 
           # Build comprehensive description with all error details
-          DESCRIPTION=$(cat << 'DESCEOF'
-SonarQube quality gate check FAILED for voting01-dev.
+          DESCRIPTION="SonarQube quality gate check FAILED for voting01-dev.
 
-═══════════════════════════════════════
-QUALITY GATE STATUS: ${{ needs.quality-sonarqube.outputs.quality_gate_status }}
-═══════════════════════════════════════
+          QUALITY GATE STATUS: ${{ needs.quality-sonarqube.outputs.quality_gate_status }}
 
-📊 FAILED CONDITIONS:
-${{ needs.quality-sonarqube.outputs.failed_conditions }}
+          FAILED CONDITIONS:
+          ${{ needs.quality-sonarqube.outputs.failed_conditions }}
 
-📈 CODE METRICS:
-┌─────────────────┬────────────┐
-│ Metric          │ Value      │
-├─────────────────┼────────────┤
-│ Bugs            │ ${{ needs.quality-sonarqube.outputs.bugs }}         │
-│ Vulnerabilities │ ${{ needs.quality-sonarqube.outputs.vulnerabilities }}         │
-│ Code Smells     │ ${{ needs.quality-sonarqube.outputs.code_smells }}         │
-│ Coverage        │ ${{ needs.quality-sonarqube.outputs.coverage }}%        │
-│ Duplications    │ ${{ needs.quality-sonarqube.outputs.duplications }}%        │
-│ Tech Debt       │ ${{ needs.quality-sonarqube.outputs.tech_debt }}      │
-└─────────────────┴────────────┘
+          CODE METRICS:
+          - Bugs: ${{ needs.quality-sonarqube.outputs.bugs }}
+          - Vulnerabilities: ${{ needs.quality-sonarqube.outputs.vulnerabilities }}
+          - Code Smells: ${{ needs.quality-sonarqube.outputs.code_smells }}
+          - Coverage: ${{ needs.quality-sonarqube.outputs.coverage }}%
+          - Duplications: ${{ needs.quality-sonarqube.outputs.duplications }}%
+          - Tech Debt: ${{ needs.quality-sonarqube.outputs.tech_debt }}
 
-🐛 TOP ISSUES (${{ needs.quality-sonarqube.outputs.issues_count }} total):
-${{ needs.quality-sonarqube.outputs.issues_list }}
+          TOP ISSUES (${{ needs.quality-sonarqube.outputs.issues_count }} total):
+          ${{ needs.quality-sonarqube.outputs.issues_list }}
 
-═══════════════════════════════════════
-BUILD CONTEXT:
-═══════════════════════════════════════
-- Commit: ${{ github.sha }}
-- Branch: ${{ github.ref_name }}
-- Triggered by: ${{ github.actor }}
-- Event: ${{ github.event_name }}
+          BUILD CONTEXT:
+          - Commit: ${{ github.sha }}
+          - Branch: ${{ github.ref_name }}
+          - Triggered by: ${{ github.actor }}
+          - Event: ${{ github.event_name }}
 
-🔗 LINKS:
-- SonarQube Dashboard: ${{ needs.quality-sonarqube.outputs.sonar_url }}
-- GitHub Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LINKS:
+          - SonarQube Dashboard: ${{ needs.quality-sonarqube.outputs.sonar_url }}
+          - GitHub Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-═══════════════════════════════════════
-RECOMMENDED ACTIONS:
-═══════════════════════════════════════
-1. Review the failed conditions above
-2. Click the SonarQube Dashboard link for full issue details
-3. Fix issues in priority order: Bugs > Vulnerabilities > Code Smells
-4. Ensure coverage meets threshold requirements
-5. Re-run the pipeline after fixes
-DESCEOF
-)
+          RECOMMENDED ACTIONS:
+          1. Review the failed conditions above
+          2. Click the SonarQube Dashboard link for full issue details
+          3. Fix issues in priority order: Bugs > Vulnerabilities > Code Smells
+          4. Ensure coverage meets threshold requirements
+          5. Re-run the pipeline after fixes"
 
           # Determine priority based on metrics
           BUGS="${{ needs.quality-sonarqube.outputs.bugs }}"
