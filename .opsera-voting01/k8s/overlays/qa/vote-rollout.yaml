@@ -60,7 +60,17 @@ spec:
       trafficRouting:
         nginx:
           stableIngress: voting01-ingress
+      # ═══════════════════════════════════════════════════════════════════════════
+      # CANARY DEPLOYMENT STRATEGY WITH NEW RELIC ANALYSIS
+      #
+      # Step 1: 20% traffic → HTTP health check
+      # Step 2: 50% traffic → New Relic error rate analysis (2% threshold)
+      # Step 3: 100% traffic → Final analysis before promotion
+      #
+      # Auto-rollback if: Error rate > 2% OR health check fails
+      # ═══════════════════════════════════════════════════════════════════════════
       steps:
+        # Phase 1: Initial canary (20% traffic)
         - setWeight: 20
         - pause: {duration: 2m}
         - analysis:
@@ -71,14 +81,35 @@ spec:
                 value: vote-canary
               - name: namespace
                 value: voting01-qa
+
+        # Phase 2: Expanded canary (50% traffic) with New Relic error rate analysis
         - setWeight: 50
         - pause: {duration: 3m}
         - analysis:
             templates:
-              - templateName: voting01-health-check
+              - templateName: voting01-canary-analysis
             args:
               - name: service-name
                 value: vote-canary
               - name: namespace
                 value: voting01-qa
+              - name: app-name
+                value: voting01-vote-qa
+              - name: error-threshold
+                value: "2"  # Rollback if error rate > 2%
+
+        # Phase 3: Full rollout (100% traffic)
         - setWeight: 100
+        - pause: {duration: 1m}
+        - analysis:
+            templates:
+              - templateName: voting01-canary-analysis
+            args:
+              - name: service-name
+                value: vote-canary
+              - name: namespace
+                value: voting01-qa
+              - name: app-name
+                value: voting01-vote-qa
+              - name: error-threshold
+                value: "2"

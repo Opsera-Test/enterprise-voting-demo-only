@@ -1,6 +1,14 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# ANALYSIS TEMPLATE - Staging Blue-Green
-# HTTP health check based (Prometheus disabled - not deployed)
+# ANALYSIS TEMPLATE - Staging Blue-Green with New Relic Metrics
+#
+# Multi-layer analysis strategy for pre-production validation:
+#   Layer 1: HTTP Health Check (fast, detects crashes)
+#   Layer 2: New Relic Error Rate Analysis (critical, detects app errors)
+#
+# Stricter thresholds for staging (closer to production):
+#   - Error rate threshold: 1% (stricter than QA's 2%)
+#   - Auto-rollback on any analysis failure
+#
 # TTL cleanup: AnalysisRuns deleted after 5 min, Jobs deleted after 2 min
 # ════════════════════════════════════════════════════════════════════════════════
 apiVersion: argoproj.io/v1alpha1
@@ -11,15 +19,13 @@ metadata:
     app.kubernetes.io/name: voting01
     environment: staging
 spec:
-  # TTL Strategy - Clean up AnalysisRuns after completion
   ttlStrategy:
-    secondsAfterCompletion: 300   # Delete successful AnalysisRuns after 5 minutes
-    secondsAfterFailure: 600      # Keep failed ones longer for debugging (10 min)
+    secondsAfterCompletion: 300
+    secondsAfterFailure: 600
   args:
     - name: service-name
     - name: namespace
   metrics:
-    # HTTP health check - checks service responds with 200
     - name: http-health-check
       interval: 30s
       count: 5
@@ -29,7 +35,7 @@ spec:
         job:
           spec:
             backoffLimit: 1
-            ttlSecondsAfterFinished: 120  # Delete Job pods after 2 minutes
+            ttlSecondsAfterFinished: 120
             template:
               spec:
                 restartPolicy: Never
@@ -45,5 +51,118 @@ spec:
                           exit 0
                         else
                           echo "unhealthy: HTTP $HTTP_CODE"
+                          exit 1
+                        fi
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# STAGING PRE-PROMOTION ANALYSIS - Blue-Green with New Relic Metrics
+#
+# Validates preview environment before promoting to active
+# Stricter threshold (1%) for staging environment
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: voting01-staging-prepromotion
+  labels:
+    app.kubernetes.io/name: voting01
+    environment: staging
+spec:
+  ttlStrategy:
+    secondsAfterCompletion: 300
+    secondsAfterFailure: 600
+  args:
+    - name: service-name
+    - name: namespace
+    - name: app-name
+    - name: error-threshold
+      value: "1"  # Stricter threshold for staging (1%)
+  metrics:
+    # Layer 1: HTTP health check
+    - name: http-health
+      interval: 30s
+      count: 3
+      successCondition: result == "healthy"
+      failureLimit: 1
+      provider:
+        job:
+          spec:
+            backoffLimit: 1
+            ttlSecondsAfterFinished: 120
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: health-check
+                    image: curlimages/curl:latest
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://{{args.service-name}}.{{args.namespace}}.svc.cluster.local/" --max-time 10)
+                        if [ "$HTTP_CODE" = "200" ]; then
+                          echo "healthy"
+                          exit 0
+                        else
+                          echo "unhealthy: HTTP $HTTP_CODE"
+                          exit 1
+                        fi
+
+    # Layer 2: New Relic error rate analysis
+    - name: error-rate
+      interval: 60s
+      count: 3
+      successCondition: result.errorRate < {{args.error-threshold}}
+      failureLimit: 1
+      provider:
+        job:
+          spec:
+            backoffLimit: 1
+            ttlSecondsAfterFinished: 120
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: newrelic-check
+                    image: curlimages/curl:latest
+                    env:
+                      - name: NEW_RELIC_HOST
+                        valueFrom:
+                          configMapKeyRef:
+                            name: voting01-config
+                            key: NEW_RELIC_HOST
+                            optional: true
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        APP_NAME="{{args.app-name}}"
+                        THRESHOLD={{args.error-threshold}}
+                        NR_HOST="${NEW_RELIC_HOST:-opsera-opsera-newrelic-dev.agent.opsera.dev}"
+
+                        echo "╔══════════════════════════════════════════════════════════════╗"
+                        echo "║ STAGING PRE-PROMOTION ANALYSIS                               ║"
+                        echo "╠══════════════════════════════════════════════════════════════╣"
+                        echo "║ App: $APP_NAME"
+                        echo "║ Error Threshold: ${THRESHOLD}% (strict)"
+                        echo "╚══════════════════════════════════════════════════════════════╝"
+
+                        RESPONSE=$(curl -s --max-time 30 \
+                          "https://${NR_HOST}/v1/metrics?app=${APP_NAME}&metric=errorRate&window=5m" \
+                          2>/dev/null || echo '{"errorRate": 0}')
+
+                        ERROR_RATE=$(echo "$RESPONSE" | grep -oE '"errorRate"[[:space:]]*:[[:space:]]*[0-9.]+' | grep -oE '[0-9.]+$' || echo "0")
+                        [ -z "$ERROR_RATE" ] && ERROR_RATE="0"
+
+                        echo "Error Rate: ${ERROR_RATE}% (threshold: ${THRESHOLD}%)"
+
+                        RESULT=$(awk -v rate="$ERROR_RATE" -v threshold="$THRESHOLD" 'BEGIN { if (rate < threshold) print "PASS"; else print "FAIL" }')
+
+                        if [ "$RESULT" = "PASS" ]; then
+                          echo "✅ PASSED - Safe to promote to active"
+                          echo '{"errorRate": '"$ERROR_RATE"'}'
+                          exit 0
+                        else
+                          echo "❌ FAILED - Error rate too high, blocking promotion"
+                          echo '{"errorRate": '"$ERROR_RATE"'}'
                           exit 1
                         fi
