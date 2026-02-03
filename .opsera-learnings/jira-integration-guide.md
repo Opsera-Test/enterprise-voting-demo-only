@@ -938,6 +938,7 @@ Track all updates to this learning guide.
 
 | Date | Version | Changes |
 |------|---------|---------|
+| 2026-02-03 | 1.2 | Added Phase 6 - README auto-update dashboard with relative time, owner, and last 5 deployments |
 | 2026-02-03 | 1.2 | Test workflow execution - verify auto-update mechanism |
 | 2026-02-03 | 1.0 | Initial creation with Jira integration learnings |
 | 2026-02-03 | 1.1 | Added complete session history, UI changes, landscape enhancements |
