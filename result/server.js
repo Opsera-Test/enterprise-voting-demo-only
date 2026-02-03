@@ -5,7 +5,15 @@ var express = require('express'),
     path = require('path'),
     app = express(),
     server = require('http').Server(app),
-    io = require('socket.io')(server);
+    io = require('socket.io')(server, {
+      cors: {
+        origin: "*",
+        methods: ["GET", "POST"],
+        credentials: true
+      },
+      transports: ['websocket', 'polling'],
+      allowEIO3: true
+    });
 
 var port = process.env.PORT || 4000;
 
