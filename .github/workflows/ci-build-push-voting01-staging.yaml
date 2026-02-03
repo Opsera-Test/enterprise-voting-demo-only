@@ -119,26 +119,39 @@ jobs:
     if: always()
     runs-on: ${{ github.event.inputs.runner == 'github-hosted' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "opsera"]') }}
     steps:
+      - name: Determine Status
+        id: status
+        run: |
+          if [ "${{ needs.deploy.outputs.success }}" = "true" ]; then
+            echo "emoji=✅" >> $GITHUB_OUTPUT
+            echo "title=Staging Blue-Green Succeeded" >> $GITHUB_OUTPUT
+          else
+            echo "emoji=❌" >> $GITHUB_OUTPUT
+            echo "title=Staging Blue-Green Failed" >> $GITHUB_OUTPUT
+          fi
+
       - name: Send Slack Notification
         if: env.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v1
         with:
           payload: |
             {
+              "text": "${{ steps.status.outputs.emoji }} ${{ steps.status.outputs.title }} - voting01-staging",
               "blocks": [
                 {
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ needs.deploy.outputs.success == 'true' && '✅ Staging Blue-Green Succeeded' || '❌ Staging Blue-Green Failed' }}"
+                    "text": "${{ steps.status.outputs.emoji }} ${{ steps.status.outputs.title }}",
+                    "emoji": true
                   }
                 },
                 {
                   "type": "section",
                   "fields": [
-                    {"type": "mrkdwn", "text": "*App:*\nvoting01"},
-                    {"type": "mrkdwn", "text": "*Environment:*\nStaging (Blue-Green)"},
-                    {"type": "mrkdwn", "text": "*Tag:*\n${{ github.event.inputs.image_tag }}"},
+                    {"type": "mrkdwn", "text": "*App:*\n`voting01`"},
+                    {"type": "mrkdwn", "text": "*Environment:*\n`Staging (Blue-Green)`"},
+                    {"type": "mrkdwn", "text": "*Tag:*\n`${{ github.event.inputs.image_tag }}`"},
                     {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
                   ]
                 },
