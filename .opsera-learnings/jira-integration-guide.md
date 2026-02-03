@@ -108,6 +108,8 @@ AUTHOR=$(git log -1 --format="%an" "$SOURCE_SHA" 2>/dev/null || echo "Unknown")
 | `df51f38` | Improved landscape report layout - deployments on top, diagrams below |
 | `e44fde6` | Added auto-update README with live deployment status |
 | `432fd25` | First auto-generated README update with deployment data |
+| `626b2fe` | Fixed to show actual code author instead of github-actions[bot] |
+| `0559320` | Added git pull --rebase before push to avoid conflicts |
 
 **Key Features:**
 - README deployment dashboard auto-updates on every landscape run
@@ -117,6 +119,7 @@ AUTHOR=$(git log -1 --format="%an" "$SOURCE_SHA" 2>/dev/null || echo "Unknown")
   - **Recent Deployments** - Last 5 as bullets with relative timestamps
 - Uses HTML comment markers for section replacement
 - Commits with `[skip ci]` to avoid triggering builds
+- Skips bot commits to find actual human author
 
 **README Template Structure:**
 ```markdown
@@ -169,6 +172,28 @@ awk '
 ' README.md > README.md.tmp && mv README.md.tmp README.md
 ```
 
+**Skip Bot Commits - Find Actual Human Author:**
+```bash
+# Look up the actual author of the source commit
+AUTHOR=$(git log -1 --format="%an" "$SOURCE_SHA" 2>/dev/null || echo "Unknown")
+
+# If author is a bot, find the last non-bot commit author
+if [ "$AUTHOR" = "github-actions[bot]" ] || [ "$AUTHOR" = "GitHub Actions" ]; then
+  # Find the last commit by a human (not bot) before or at this SHA
+  AUTHOR=$(git log --format="%an" "$SOURCE_SHA" 2>/dev/null | grep -v -E "github-actions|GitHub Actions|\[bot\]" | head -1 || true)
+  [ -z "$AUTHOR" ] && AUTHOR=$(git log --format="%an" -10 2>/dev/null | grep -v -E "github-actions|GitHub Actions|\[bot\]" | head -1 || true)
+  [ -z "$AUTHOR" ] && AUTHOR="Unknown"
+fi
+```
+
+**Git Pull Before Push (Avoid Conflicts):**
+```bash
+# In workflow commit step - pull before push to avoid conflicts
+git commit -m "docs: Update deployment dashboard [skip ci]"
+git pull --rebase origin main || true
+git push
+```
+
 ### Summary of All Issues Resolved
 
 | # | Issue | Root Cause | Fix |
@@ -180,6 +205,8 @@ awk '
 | 5 | SonarQube failure not triggering Jira | `continue-on-error` makes job result 'success' | Use `steps.scan.outcome` |
 | 6 | Wrong project key (DEPLOY vs TEST) | Hardcoded key doesn't exist | Use configurable secret |
 | 7 | Author showing as "github-actions[bot]" | Deploy commits are by bot | Extract source SHA from image tag |
+| 8 | Still showing bot for manual triggers | Source commit itself is by bot | Skip bot commits, find last human author |
+| 9 | README push fails with conflicts | Concurrent commits to main | Add `git pull --rebase` before push |
 
 ### Files Modified in Session
 
