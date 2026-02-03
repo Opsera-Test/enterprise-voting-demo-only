@@ -596,6 +596,89 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   # ═══════════════════════════════════════════════════════════════════════════════
+  # JIRA QUALITY GATE ISSUE - Create ticket when SonarQube fails
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  notify-jira-quality:
+    name: "📊 Jira Quality Issue"
+    needs: [quality-sonarqube]
+    if: always() && needs.quality-sonarqube.result == 'failure'
+    runs-on: ${{ github.event.inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "linux", "opsera"]') || 'ubuntu-latest' }}
+    continue-on-error: true
+    steps:
+      - name: Check Jira Configuration
+        id: check-jira
+        run: |
+          CONFIGURED="true"
+          if [ -z "${{ secrets.JIRA_API_TOKEN }}" ] || [ -z "${{ secrets.JIRA_BASE_URL }}" ]; then
+            CONFIGURED="false"
+            echo "⚠️ Jira not configured" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "configured=${CONFIGURED}" >> $GITHUB_OUTPUT
+
+      - name: Create Jira Quality Gate Issue
+        if: steps.check-jira.outputs.configured == 'true'
+        env:
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_PROJECT: ${{ secrets.JIRA_PROJECT }}
+          JIRA_AUTH_TYPE: ${{ secrets.JIRA_AUTH_TYPE }}
+        run: |
+          # Set auth header
+          if [ "$JIRA_AUTH_TYPE" = "api-key" ]; then
+            AUTH_HEADER="X-API-Key: ${JIRA_API_TOKEN}"
+          else
+            AUTH_HEADER="Authorization: Basic $(echo -n "${JIRA_EMAIL}:${JIRA_API_TOKEN}" | base64)"
+          fi
+
+          PROJECT_KEY="${JIRA_PROJECT:-TEST}"
+
+          DESCRIPTION="SonarQube quality gate check failed for voting01-dev.
+
+          Details:
+          - Dashboard: ${{ needs.quality-sonarqube.outputs.sonar_url }}
+          - Status: ${{ needs.quality-sonarqube.outputs.quality_gate_status }}
+          - Commit: ${{ github.sha }}
+          - Branch: ${{ github.ref_name }}
+          - Triggered by: ${{ github.actor }}
+
+          Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          PAYLOAD=$(jq -n \
+            --arg project "$PROJECT_KEY" \
+            --arg summary "[QUALITY] voting01-dev: SonarQube Quality Gate Failed" \
+            --arg description "$DESCRIPTION" \
+            '{
+              "fields": {
+                "project": {"key": $project},
+                "summary": $summary,
+                "description": $description,
+                "issuetype": {"name": "Task"},
+                "priority": {"name": "High"}
+              }
+            }')
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "${AUTH_HEADER}" \
+            -H "Content-Type: application/json" \
+            "${JIRA_BASE_URL}/rest/api/2/issue" \
+            -d "$PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          ISSUE_KEY=$(echo "$BODY" | jq -r '.key // "FAILED"')
+
+          if [ "$ISSUE_KEY" != "FAILED" ] && [ "$ISSUE_KEY" != "null" ] && [ "$HTTP_CODE" = "201" ]; then
+            echo "### 📊 Jira Quality Gate Issue Created" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Issue:** [$ISSUE_KEY](${JIRA_BASE_URL}/browse/${ISSUE_KEY})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Failed to create Jira issue (HTTP $HTTP_CODE)" >> $GITHUB_STEP_SUMMARY
+            echo "Response: $BODY" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ═══════════════════════════════════════════════════════════════════════════════
   # JIRA SECURITY ISSUE - Create ticket when vulnerabilities found
   # ═══════════════════════════════════════════════════════════════════════════════
 
