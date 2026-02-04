@@ -38,7 +38,6 @@ data:
   # Environment (applies to all services)
   NEW_RELIC_ENVIRONMENT: "staging"
 
-  # Node.js (Result) Settings
-  NEW_RELIC_NO_CONFIG_FILE: "true"
+  # Application Logging Settings
   NEW_RELIC_APPLICATION_LOGGING_ENABLED: "true"
   NEW_RELIC_APPLICATION_LOGGING_FORWARDING_ENABLED: "true"

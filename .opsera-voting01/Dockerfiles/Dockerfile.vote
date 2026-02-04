@@ -1,4 +1,4 @@
-# Vote App - Python Flask
+# Vote App - Python Flask with New Relic APM
 FROM python:3.11-slim AS base
 
 RUN apt-get update && \
@@ -15,4 +15,6 @@ COPY vote/ .
 
 EXPOSE 80
 
-CMD ["gunicorn", "app:app", "-b", "0.0.0.0:80", "--log-file", "-", "--access-logfile", "-", "--workers", "4", "--keep-alive", "0"]
+# Use newrelic-admin to wrap gunicorn for APM monitoring
+# Agent reads config from newrelic.ini with env var interpolation
+CMD ["newrelic-admin", "run-program", "gunicorn", "app:app", "-b", "0.0.0.0:80", "--log-file", "-", "--access-logfile", "-", "--workers", "4", "--keep-alive", "0"]
