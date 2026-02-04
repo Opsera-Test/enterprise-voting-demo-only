@@ -939,7 +939,7 @@ jobs:
             AUTHOR=$(echo "$LATEST" | cut -d'~' -f4)
             REL_TIME=$(relative_time "$TIMESTAMP")
 
-            # Get last 5 as bullets
+            # Get last 5 as bullets with author names
             BULLETS=""
             IFS=';' read -ra ENTRIES <<< "$history"
             count=0
@@ -948,11 +948,14 @@ jobs:
                 TAG=$(echo "$entry" | cut -d'~' -f2)
                 SHORT_TAG=$(echo "$TAG" | cut -c1-12)
                 TS=$(echo "$entry" | cut -d'~' -f3)
+                ENTRY_AUTHOR=$(echo "$entry" | cut -d'~' -f4)
                 RT=$(relative_time "$TS")
+                # Shorten author name if too long
+                SHORT_AUTHOR=$(echo "$ENTRY_AUTHOR" | cut -c1-15)
                 if [ -z "$BULLETS" ]; then
-                  BULLETS="• \`${SHORT_TAG}\` (${RT})"
+                  BULLETS="• \`${SHORT_TAG}\` (${RT}) by _${SHORT_AUTHOR}_"
                 else
-                  BULLETS="${BULLETS}<br>• \`${SHORT_TAG}\` (${RT})"
+                  BULLETS="${BULLETS}<br>• \`${SHORT_TAG}\` (${RT}) by _${SHORT_AUTHOR}_"
                 fi
                 count=$((count + 1))
               fi
