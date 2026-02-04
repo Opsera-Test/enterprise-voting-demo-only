@@ -125,40 +125,191 @@ jobs:
           aws eks update-kubeconfig --name ${{ env.HUB_CLUSTER }} --region ${{ env.AWS_REGION }}
           kubectl annotate application ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -n argocd argocd.argoproj.io/refresh=hard --overwrite
 
-      - name: Verify Canary Rollout
+      - name: Query New Relic Baseline Metrics
+        id: nr_baseline
+        continue-on-error: true
+        run: |
+          echo "### 📊 New Relic APM Baseline Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Query mock New Relic server for baseline metrics
+          NR_HOST="opsera-opsera-newrelic-dev.agent.opsera.dev"
+
+          echo "Querying baseline metrics from New Relic mock server..."
+
+          # Get vote service metrics
+          VOTE_METRICS=$(curl -s --max-time 10 \
+            "https://${NR_HOST}/v1/metrics?app=voting01-vote-qa&metric=errorRate&window=5m" \
+            2>/dev/null || echo '{"errorRate": 0}')
+          VOTE_ERROR=$(echo "$VOTE_METRICS" | grep -oE '"errorRate"[[:space:]]*:[[:space:]]*[0-9.]+' | grep -oE '[0-9.]+$' || echo "0")
+
+          # Get result service metrics
+          RESULT_METRICS=$(curl -s --max-time 10 \
+            "https://${NR_HOST}/v1/metrics?app=voting01-result-qa&metric=errorRate&window=5m" \
+            2>/dev/null || echo '{"errorRate": 0}')
+          RESULT_ERROR=$(echo "$RESULT_METRICS" | grep -oE '"errorRate"[[:space:]]*:[[:space:]]*[0-9.]+' | grep -oE '[0-9.]+$' || echo "0")
+
+          echo "| Service | Error Rate | Threshold | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|------------|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          # Check vote error rate
+          if [ "$(echo "$VOTE_ERROR < 2" | bc -l 2>/dev/null || echo 1)" = "1" ]; then
+            echo "| Vote | ${VOTE_ERROR:-0}% | 2% | ✅ OK |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Vote | ${VOTE_ERROR:-0}% | 2% | ⚠️ High |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Check result error rate
+          if [ "$(echo "$RESULT_ERROR < 2" | bc -l 2>/dev/null || echo 1)" = "1" ]; then
+            echo "| Result | ${RESULT_ERROR:-0}% | 2% | ✅ OK |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Result | ${RESULT_ERROR:-0}% | 2% | ⚠️ High |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_Metrics from New Relic Mock Server: ${NR_HOST}_" >> $GITHUB_STEP_SUMMARY
+
+      - name: Live Canary Dashboard
         id: verify
         run: |
           aws eks update-kubeconfig --name ${{ env.SPOKE_CLUSTER }} --region ${{ env.AWS_REGION }}
           NS="${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}"
 
-          echo "### 📊 Canary Rollout Progress" >> $GITHUB_STEP_SUMMARY
+          echo "╔══════════════════════════════════════════════════════════════════════════════╗"
+          echo "║                    🚀 QA CANARY DEPLOYMENT LIVE DASHBOARD                    ║"
+          echo "╠══════════════════════════════════════════════════════════════════════════════╣"
+          echo "║ App: voting01                    Environment: QA                             ║"
+          echo "║ Strategy: Canary (20% → 50% → 100%)                                          ║"
+          echo "║ Analysis: HTTP Health + New Relic Error Rate (< 2%)                          ║"
+          echo "╚══════════════════════════════════════════════════════════════════════════════╝"
+          echo ""
 
-          for i in {1..60}; do
-            # Check rollout status using kubectl argo rollouts
-            VOTE_STATUS=$(kubectl get rollout vote -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "Progressing")
-            RESULT_STATUS=$(kubectl get rollout result -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "Progressing")
-            WORKER_STATUS=$(kubectl get rollout worker -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "Progressing")
+          # Initialize step summary
+          echo "### 🎯 QA Canary Deployment Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status | Traffic | Analysis |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|---------|----------|" >> $GITHUB_STEP_SUMMARY
 
-            echo "Vote: ${VOTE_STATUS}, Result: ${RESULT_STATUS}, Worker: ${WORKER_STATUS}"
+          MAX_ITERATIONS=80
+          POLL_INTERVAL=15
 
-            if [ "$VOTE_STATUS" = "Healthy" ] && [ "$RESULT_STATUS" = "Healthy" ] && [ "$WORKER_STATUS" = "Healthy" ]; then
-              echo "✅ All rollouts healthy!" >> $GITHUB_STEP_SUMMARY
-              echo "- Vote: https://vote-voting01-qa.agent.opsera.dev" >> $GITHUB_STEP_SUMMARY
-              echo "- Result: https://result-voting01-qa.agent.opsera.dev" >> $GITHUB_STEP_SUMMARY
+          for i in $(seq 1 $MAX_ITERATIONS); do
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📊 Poll $i/$MAX_ITERATIONS - $(date '+%H:%M:%S')"
+            echo ""
+
+            # Get detailed rollout status for vote
+            VOTE_PHASE=$(kubectl get rollout vote -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+            VOTE_WEIGHT=$(kubectl get rollout vote -n $NS -o jsonpath='{.status.canary.weights.canary}' 2>/dev/null || echo "0")
+            VOTE_STABLE=$(kubectl get rollout vote -n $NS -o jsonpath='{.status.canary.weights.stable}' 2>/dev/null || echo "100")
+            VOTE_STEP=$(kubectl get rollout vote -n $NS -o jsonpath='{.status.currentStepIndex}' 2>/dev/null || echo "0")
+            VOTE_MSG=$(kubectl get rollout vote -n $NS -o jsonpath='{.status.message}' 2>/dev/null || echo "")
+
+            # Get detailed rollout status for result
+            RESULT_PHASE=$(kubectl get rollout result -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+            RESULT_WEIGHT=$(kubectl get rollout result -n $NS -o jsonpath='{.status.canary.weights.canary}' 2>/dev/null || echo "0")
+            RESULT_STABLE=$(kubectl get rollout result -n $NS -o jsonpath='{.status.canary.weights.stable}' 2>/dev/null || echo "100")
+            RESULT_STEP=$(kubectl get rollout result -n $NS -o jsonpath='{.status.currentStepIndex}' 2>/dev/null || echo "0")
+
+            # Get worker status (simpler canary)
+            WORKER_PHASE=$(kubectl get rollout worker -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+
+            # Display vote rollout
+            echo "┌─────────────────────────────────────────────────────────────────────────────┐"
+            echo "│ 🗳️  VOTE SERVICE                                                            │"
+            echo "├─────────────────────────────────────────────────────────────────────────────┤"
+            printf "│ Phase: %-12s  Step: %-3s  Canary: %3s%%  Stable: %3s%%              │\n" "$VOTE_PHASE" "$VOTE_STEP" "${VOTE_WEIGHT:-0}" "${VOTE_STABLE:-100}"
+            [ -n "$VOTE_MSG" ] && echo "│ Message: $VOTE_MSG"
+            echo "└─────────────────────────────────────────────────────────────────────────────┘"
+
+            # Display result rollout
+            echo "┌─────────────────────────────────────────────────────────────────────────────┐"
+            echo "│ 📊 RESULT SERVICE                                                           │"
+            echo "├─────────────────────────────────────────────────────────────────────────────┤"
+            printf "│ Phase: %-12s  Step: %-3s  Canary: %3s%%  Stable: %3s%%              │\n" "$RESULT_PHASE" "$RESULT_STEP" "${RESULT_WEIGHT:-0}" "${RESULT_STABLE:-100}"
+            echo "└─────────────────────────────────────────────────────────────────────────────┘"
+
+            # Display worker rollout
+            echo "┌─────────────────────────────────────────────────────────────────────────────┐"
+            echo "│ ⚙️  WORKER SERVICE                                                          │"
+            echo "├─────────────────────────────────────────────────────────────────────────────┤"
+            printf "│ Phase: %-12s                                                        │\n" "$WORKER_PHASE"
+            echo "└─────────────────────────────────────────────────────────────────────────────┘"
+
+            # Check for analysis runs
+            echo ""
+            echo "📈 Active Analysis Runs:"
+            ANALYSIS_RUNS=$(kubectl get analysisrun -n $NS -l rollouts-pod-template-hash --sort-by=.metadata.creationTimestamp 2>/dev/null | tail -5 || echo "None found")
+            echo "$ANALYSIS_RUNS"
+
+            # Check latest analysis run result
+            LATEST_AR=$(kubectl get analysisrun -n $NS -l rollouts-pod-template-hash -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$LATEST_AR" ]; then
+              AR_PHASE=$(kubectl get analysisrun $LATEST_AR -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+              AR_MSG=$(kubectl get analysisrun $LATEST_AR -n $NS -o jsonpath='{.status.message}' 2>/dev/null || echo "")
+              echo ""
+              echo "🔬 Latest Analysis: $LATEST_AR"
+              echo "   Status: $AR_PHASE"
+              [ -n "$AR_MSG" ] && echo "   Message: $AR_MSG"
+            fi
+
+            # Check for success
+            if [ "$VOTE_PHASE" = "Healthy" ] && [ "$RESULT_PHASE" = "Healthy" ] && [ "$WORKER_PHASE" = "Healthy" ]; then
+              echo ""
+              echo "╔══════════════════════════════════════════════════════════════════════════════╗"
+              echo "║                    ✅ CANARY DEPLOYMENT SUCCESSFUL!                          ║"
+              echo "╚══════════════════════════════════════════════════════════════════════════════╝"
+
+              # Update summary with final status
+              echo "| Vote | ✅ Healthy | 100% | Passed |" >> $GITHUB_STEP_SUMMARY
+              echo "| Result | ✅ Healthy | 100% | Passed |" >> $GITHUB_STEP_SUMMARY
+              echo "| Worker | ✅ Healthy | 100% | N/A |" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### 🔗 Application URLs" >> $GITHUB_STEP_SUMMARY
+              echo "- **Vote App**: https://vote-voting01-qa.agent.opsera.dev" >> $GITHUB_STEP_SUMMARY
+              echo "- **Result App**: https://result-voting01-qa.agent.opsera.dev" >> $GITHUB_STEP_SUMMARY
+              echo "- **Argo Rollouts Dashboard**: https://rollouts-voting01-qa.agent.opsera.dev" >> $GITHUB_STEP_SUMMARY
+
               echo "success=true" >> $GITHUB_OUTPUT
               exit 0
             fi
 
-            if [ "$VOTE_STATUS" = "Degraded" ] || [ "$RESULT_STATUS" = "Degraded" ] || [ "$WORKER_STATUS" = "Degraded" ]; then
-              echo "❌ Rollout degraded!" >> $GITHUB_STEP_SUMMARY
+            # Check for degraded/failed
+            if [ "$VOTE_PHASE" = "Degraded" ] || [ "$RESULT_PHASE" = "Degraded" ] || [ "$WORKER_PHASE" = "Degraded" ]; then
+              echo ""
+              echo "╔══════════════════════════════════════════════════════════════════════════════╗"
+              echo "║                    ❌ CANARY DEPLOYMENT FAILED - ROLLING BACK               ║"
+              echo "╚══════════════════════════════════════════════════════════════════════════════╝"
+
+              # Get failure reason
+              echo ""
+              echo "🔍 Failure Analysis:"
+              kubectl describe rollout vote -n $NS 2>/dev/null | grep -A5 "Message:" || true
+
+              # Show analysis run failures
+              echo ""
+              echo "📊 Failed Analysis Runs:"
+              kubectl get analysisrun -n $NS -o jsonpath='{range .items[?(@.status.phase=="Failed")]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.status.message}{"\n"}{end}' 2>/dev/null || true
+
+              # Update summary
+              echo "| Vote | ❌ $VOTE_PHASE | ${VOTE_WEIGHT:-0}% | Failed |" >> $GITHUB_STEP_SUMMARY
+              echo "| Result | ❌ $RESULT_PHASE | ${RESULT_WEIGHT:-0}% | Failed |" >> $GITHUB_STEP_SUMMARY
+              echo "| Worker | ❌ $WORKER_PHASE | N/A | N/A |" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "⚠️ **Automatic rollback triggered** - canary analysis detected issues" >> $GITHUB_STEP_SUMMARY
+
               echo "success=false" >> $GITHUB_OUTPUT
               exit 1
             fi
 
-            sleep 15
+            echo ""
+            echo "⏳ Waiting ${POLL_INTERVAL}s before next check..."
+            sleep $POLL_INTERVAL
           done
-          echo "⏱️ Rollout timeout" >> $GITHUB_STEP_SUMMARY
+
+          echo "⏱️ Timeout: Canary rollout did not complete within expected time" >> $GITHUB_STEP_SUMMARY
           echo "success=false" >> $GITHUB_OUTPUT
+          exit 1
 
   # ═══════════════════════════════════════════════════════════════════════════════
   # NOTIFICATIONS

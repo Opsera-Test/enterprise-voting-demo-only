@@ -1,6 +1,24 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# NEW RELIC APM CONFIGURATION
+#
+# Agent is auto-initialized by newrelic-admin run-program (see Dockerfile)
+# Configuration loaded from newrelic.ini with environment variable interpolation
+# ════════════════════════════════════════════════════════════════════════════════
+import os
+
+# Log New Relic configuration status at startup
+_nr_license = os.getenv('NEW_RELIC_LICENSE_KEY')
+_nr_app = os.getenv('NEW_RELIC_APP_NAME', 'vote-app')
+_nr_host = os.getenv('NEW_RELIC_HOST', 'collector.newrelic.com')
+if _nr_license:
+    print(f'[New Relic] Agent enabled - App: {_nr_app}, Collector: {_nr_host}')
+else:
+    print('[New Relic] Agent disabled (no license key)')
+
+# ════════════════════════════════════════════════════════════════════════════════
+
 from flask import Flask, render_template, request, make_response, g, jsonify
 from redis import Redis
-import os
 import socket
 import random
 import json
