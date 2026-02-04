@@ -79,13 +79,10 @@ def hello():
     vote = None
 
     if request.method == 'POST':
-        # If error simulation is ON, fail EVERY request with 500
+        # If error simulation is ON, raise exception (captured by New Relic)
         if ERROR_SIM_ENABLED:
             app.logger.error('SIMULATED ERROR: Error simulation is ON')
-            return jsonify({
-                'error': 'Simulated Error',
-                'message': 'Error simulation is enabled for canary rollback testing'
-            }), 500
+            raise Exception('Simulated Error: Canary rollback testing')
 
         # Normal vote processing
         redis = get_redis()
