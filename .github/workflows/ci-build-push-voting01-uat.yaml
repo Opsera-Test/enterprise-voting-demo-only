@@ -123,6 +123,14 @@ jobs:
       - name: Trigger ArgoCD Sync
         run: |
           aws eks update-kubeconfig --name ${{ env.HUB_CLUSTER }} --region ${{ env.AWS_REGION }}
+          
+          # Create ArgoCD Application if it doesn't exist
+          if ! kubectl get application ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -n argocd &>/dev/null; then
+            echo "Creating ArgoCD Application for ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}..."
+            kubectl apply -f .opsera-voting01/argocd/${{ env.ENVIRONMENT }}/application.yaml
+            sleep 5
+          fi
+          
           kubectl annotate application ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }} -n argocd argocd.argoproj.io/refresh=hard --overwrite
 
       - name: Verify Canary Rollout
