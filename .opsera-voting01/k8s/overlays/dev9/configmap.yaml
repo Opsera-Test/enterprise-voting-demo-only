@@ -6,18 +6,18 @@ metadata:
     app.kubernetes.io/name: voting01
     environment: dev9
 data:
-  # Redis Configuration (for Vote service)
-  REDIS_HOST: voting01-dev9-redis.2muj25.0001.usw2.cache.amazonaws.com
+  # Redis Configuration (for Vote service) - shared with dev
+  REDIS_HOST: voting01-dev-redis.2muj25.0001.usw2.cache.amazonaws.com
   REDIS_PORT: "6379"
 
-  # PostgreSQL Configuration (for Result service)
-  DATABASE_HOST: voting01-dev9-postgres.chwgk42cofpp.us-west-2.rds.amazonaws.com
+  # PostgreSQL Configuration (for Result service) - shared with dev
+  DATABASE_HOST: voting01-dev-postgres.chwgk42cofpp.us-west-2.rds.amazonaws.com
   DATABASE_PORT: "5432"
   DATABASE_NAME: votes
   DATABASE_USER: postgres
 
-  # AWS Secrets Manager ARN for DB credentials
-  DATABASE_SECRET_ARN: arn:aws:secretsmanager:us-west-2:792373136340:secret:rds!db-dev9-voting01
+  # AWS Secrets Manager ARN for DB credentials - shared with dev
+  DATABASE_SECRET_ARN: arn:aws:secretsmanager:us-west-2:792373136340:secret:rds!db-90524015-d827-4f57-bed1-c14c12675556-pQeqiN
 
   # Application Settings
   ENVIRONMENT: dev9
