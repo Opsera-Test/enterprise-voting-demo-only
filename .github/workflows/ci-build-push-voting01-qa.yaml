@@ -71,6 +71,9 @@ jobs:
     runs-on: ${{ github.event.inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "linux", "opsera"]') || 'ubuntu-latest' }}
     outputs:
       success: ${{ steps.verify.outputs.success }}
+      failed_service: ${{ steps.verify.outputs.failed_service }}
+      failure_reason: ${{ steps.verify.outputs.failure_reason }}
+      rollback_step: ${{ steps.verify.outputs.rollback_step }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -281,6 +284,32 @@ jobs:
               echo "║                    ❌ CANARY DEPLOYMENT FAILED - ROLLING BACK               ║"
               echo "╚══════════════════════════════════════════════════════════════════════════════╝"
 
+              # Identify which service(s) failed
+              FAILED_SVCS=""
+              [ "$VOTE_PHASE" = "Degraded" ] && FAILED_SVCS="vote"
+              [ "$RESULT_PHASE" = "Degraded" ] && FAILED_SVCS="${FAILED_SVCS:+$FAILED_SVCS, }result"
+              [ "$WORKER_PHASE" = "Degraded" ] && FAILED_SVCS="${FAILED_SVCS:+$FAILED_SVCS, }worker"
+
+              # Determine which canary phase the failure occurred at
+              FAILED_STEP="unknown"
+              for svc in vote result worker; do
+                svc_phase=$(kubectl get rollout $svc -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$svc_phase" = "Degraded" ]; then
+                  step_idx=$(kubectl get rollout $svc -n $NS -o jsonpath='{.status.currentStepIndex}' 2>/dev/null || echo "0")
+                  case "$step_idx" in
+                    0|1|2) FAILED_STEP="Phase 1 (20% traffic)" ;;
+                    3|4|5) FAILED_STEP="Phase 2 (50% traffic)" ;;
+                    6|7|8) FAILED_STEP="Phase 3 (100% traffic)" ;;
+                    *) FAILED_STEP="Step $step_idx" ;;
+                  esac
+                  break
+                fi
+              done
+
+              # Get failure reason from failed analysis runs
+              FAIL_REASON=$(kubectl get analysisrun -n $NS -o jsonpath='{range .items[?(@.status.phase=="Failed")]}{.status.message}{"\n"}{end}' 2>/dev/null | head -1 || echo "Unknown")
+              [ -z "$FAIL_REASON" ] && FAIL_REASON="Unknown"
+
               # Get failure reason
               echo ""
               echo "🔍 Failure Analysis:"
@@ -298,7 +327,11 @@ jobs:
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "⚠️ **Automatic rollback triggered** - canary analysis detected issues" >> $GITHUB_STEP_SUMMARY
 
+              # Export rollback details for downstream jobs (Jira)
               echo "success=false" >> $GITHUB_OUTPUT
+              echo "failed_service=${FAILED_SVCS}" >> $GITHUB_OUTPUT
+              echo "failure_reason=${FAIL_REASON}" >> $GITHUB_OUTPUT
+              echo "rollback_step=${FAILED_STEP}" >> $GITHUB_OUTPUT
               exit 1
             fi
 
@@ -370,3 +403,126 @@ jobs:
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # JIRA - Create rollback ticket on canary failure
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  notify-jira:
+    name: "📋 Jira Rollback Ticket"
+    needs: [get-tag, deploy]
+    if: always() && needs.deploy.outputs.success == 'false'
+    runs-on: ${{ github.event.inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "linux", "opsera"]') || 'ubuntu-latest' }}
+    continue-on-error: true
+    steps:
+      - name: Check Jira Configuration
+        id: check-jira
+        run: |
+          CONFIGURED="true"
+          MISSING=""
+
+          if [ -z "${{ secrets.JIRA_API_TOKEN }}" ]; then
+            CONFIGURED="false"
+            MISSING="${MISSING} JIRA_API_TOKEN"
+          fi
+          if [ -z "${{ secrets.JIRA_BASE_URL }}" ]; then
+            CONFIGURED="false"
+            MISSING="${MISSING} JIRA_BASE_URL"
+          fi
+
+          echo "configured=${CONFIGURED}" >> $GITHUB_OUTPUT
+
+          if [ "$CONFIGURED" = "false" ]; then
+            echo "⚠️ Jira not configured - missing:${MISSING}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Create Jira Rollback Issue
+        if: steps.check-jira.outputs.configured == 'true'
+        env:
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_PROJECT: ${{ secrets.JIRA_PROJECT }}
+          JIRA_AUTH_TYPE: ${{ secrets.JIRA_AUTH_TYPE }}
+        run: |
+          # Set auth header based on auth type (api-key for mock Jira, basic for Jira Cloud)
+          if [ "$JIRA_AUTH_TYPE" = "api-key" ]; then
+            AUTH_HEADER="X-API-Key: ${JIRA_API_TOKEN}"
+          else
+            AUTH_HEADER="Authorization: Basic $(echo -n "${JIRA_EMAIL}:${JIRA_API_TOKEN}" | base64)"
+          fi
+
+          # Use configured project or default to TEST
+          PROJECT_KEY="${JIRA_PROJECT:-TEST}"
+
+          # Collect rollback details from deploy job outputs
+          FAILED_SVC="${{ needs.deploy.outputs.failed_service }}"
+          FAIL_REASON="${{ needs.deploy.outputs.failure_reason }}"
+          ROLLBACK_STEP="${{ needs.deploy.outputs.rollback_step }}"
+          IMAGE_TAG="${{ needs.get-tag.outputs.image_tag }}"
+
+          [ -z "$FAILED_SVC" ] && FAILED_SVC="unknown"
+          [ -z "$FAIL_REASON" ] && FAIL_REASON="Canary analysis failed"
+          [ -z "$ROLLBACK_STEP" ] && ROLLBACK_STEP="unknown"
+
+          # Build description (API v2 plain text for mock Jira compatibility)
+          DESCRIPTION="Canary deployment to QA was automatically rolled back.
+
+          Rollback Details:
+          - Failed Service(s): ${FAILED_SVC}
+          - Canary Phase: ${ROLLBACK_STEP}
+          - Failure Reason: ${FAIL_REASON}
+
+          Deployment Info:
+          - Image Tag: ${IMAGE_TAG}
+          - Environment: QA (Canary)
+          - Triggered by: ${{ github.actor }}
+          - Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Application URLs:
+          - Vote: https://vote-voting01-qa.agent.opsera.dev
+          - Result: https://result-voting01-qa.agent.opsera.dev
+          - Argo Rollouts: https://rollouts-voting01-qa.agent.opsera.dev"
+
+          # Create payload (API v2 format)
+          PAYLOAD=$(jq -n \
+            --arg project "$PROJECT_KEY" \
+            --arg summary "[CANARY-ROLLBACK] voting01-qa: ${FAILED_SVC} rolled back at ${ROLLBACK_STEP}" \
+            --arg description "$DESCRIPTION" \
+            '{
+              "fields": {
+                "project": {"key": $project},
+                "summary": $summary,
+                "description": $description,
+                "issuetype": {"name": "Bug"},
+                "priority": {"name": "High"}
+              }
+            }')
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "${AUTH_HEADER}" \
+            -H "Content-Type: application/json" \
+            "${JIRA_BASE_URL}/rest/api/2/issue" \
+            -d "$PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          ISSUE_KEY=$(echo "$BODY" | jq -r '.key // "FAILED"')
+
+          if [ "$ISSUE_KEY" != "FAILED" ] && [ "$ISSUE_KEY" != "null" ] && [ "$HTTP_CODE" = "201" ]; then
+            echo "### 📋 Jira Rollback Ticket Created" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Issue:** [$ISSUE_KEY](${JIRA_BASE_URL}/browse/${ISSUE_KEY})" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Type | Canary Rollback |" >> $GITHUB_STEP_SUMMARY
+            echo "| Environment | QA |" >> $GITHUB_STEP_SUMMARY
+            echo "| Failed Service | ${FAILED_SVC} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Canary Phase | ${ROLLBACK_STEP} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Failure Reason | ${FAIL_REASON} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Image Tag | ${IMAGE_TAG} |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Failed to create Jira issue (HTTP $HTTP_CODE)" >> $GITHUB_STEP_SUMMARY
+            echo "Response: $BODY" >> $GITHUB_STEP_SUMMARY
+          fi
