@@ -40,10 +40,10 @@ patches:
 images:
   - name: PLACEHOLDER_VOTE_IMAGE
     newName: 792373136340.dkr.ecr.us-west-2.amazonaws.com/opsera/opseravote1-vote
-    newTag: b70cd45-20260209003445
+    newTag: 23a9a7b-20260209050605
   - name: PLACEHOLDER_RESULT_IMAGE
     newName: 792373136340.dkr.ecr.us-west-2.amazonaws.com/opsera/opseravote1-result
-    newTag: b70cd45-20260209003445
+    newTag: 23a9a7b-20260209050605
   - name: PLACEHOLDER_WORKER_IMAGE
     newName: 792373136340.dkr.ecr.us-west-2.amazonaws.com/opsera/opseravote1-worker
-    newTag: b70cd45-20260209003445
+    newTag: 23a9a7b-20260209050605
