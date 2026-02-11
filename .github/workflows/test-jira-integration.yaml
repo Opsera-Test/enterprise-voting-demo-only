@@ -72,17 +72,12 @@ jobs:
           PROJECT_KEY="${JIRA_PROJECT:-TEST}"
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
 
+          DESCRIPTION="Test ticket created by Opsera AI Agent to verify Jira integration. Created: ${TIMESTAMP} | Repo: ${{ github.repository }} | By: ${{ github.actor }} | Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} | This ticket can be safely closed."
+
           PAYLOAD=$(jq -n \
             --arg project "$PROJECT_KEY" \
             --arg summary "[TEST] Jira Integration Verification - ${TIMESTAMP}" \
-            --arg description "This is a test ticket created by the Opsera AI Agent to verify Jira integration is working correctly.
-
-Created: ${TIMESTAMP}
-Repository: ${{ github.repository }}
-Triggered by: ${{ github.actor }}
-Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-This ticket can be safely closed." \
+            --arg description "$DESCRIPTION" \
             '{
               "fields": {
                 "project": {"key": $project},
